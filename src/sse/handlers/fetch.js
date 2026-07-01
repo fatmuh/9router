@@ -6,6 +6,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings, getCombos } from "@/lib/localDb";
+import { enforceApiKeyAccess, scopeErrorResponse } from "@/lib/auth/apiKeyScope.js";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -64,6 +65,14 @@ export async function handleFetch(request) {
   if (!providerInput || typeof providerInput !== "string") {
     log.warn("FETCH", "Missing provider/model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: provider (or model)");
+  }
+
+  if (apiKey) {
+    const scope = await enforceApiKeyAccess(apiKey, { model: providerInput });
+    if (!scope.ok) {
+      log.warn("AUTH", `Key scope rejected: ${scope.code} — ${scope.error}`);
+      return scopeErrorResponse(scope);
+    }
   }
 
   if (!targetUrl || typeof targetUrl !== "string") {

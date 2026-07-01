@@ -265,6 +265,12 @@ export async function saveRequestUsage(entry) {
     if (!entry.timestamp) entry.timestamp = new Date().toISOString();
     entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
 
+    // Resolve userId (for per-user quota) BEFORE the synchronous transaction.
+    if (!entry.userId && entry.apiKey) {
+      entry.userId = await resolveUserIdForApiKey(entry.apiKey);
+    }
+    const resolvedUserId = entry.userId || null;
+
     const tokens = entry.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
@@ -299,10 +305,10 @@ export async function saveRequestUsage(entry) {
       }
 
       db.run(
-        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, userId, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           entry.timestamp, entry.provider || null, entry.model || null,
-          entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
+          entry.connectionId || null, entry.apiKey || null, resolvedUserId, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
           stringifyJson(tokens), stringifyJson({}),
         ]
@@ -351,6 +357,106 @@ export async function getUsageHistory(filter = {}) {
     connectionId: r.connectionId, apiKeyMasked: maskApiKey(r.apiKey), endpoint: r.endpoint,
     cost: r.cost, status: r.status, tokens: parseJson(r.tokens, {}),
   }));
+}
+
+// Sum tokens (input + output) for a user since a timestamp — for per-user rolling quota.
+// Resolves the user's keys and sums their usage, plus any usageHistory rows already tagged with userId.
+export async function getTokenUsageByUserSince(userId, sinceIso) {
+  if (!userId) return 0;
+  const db = await getAdapter();
+  try {
+    // Direct hits on rows tagged with userId (new records).
+    const row = db.get(
+      `SELECT COALESCE(SUM(COALESCE(promptTokens,0) + COALESCE(completionTokens,0)), 0) AS total
+       FROM usageHistory WHERE userId = ? AND timestamp >= ?`,
+      [userId, sinceIso]
+    );
+    return Number(row?.total) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Best-effort: resolve a userId from a raw API key value (for back-filling usage rows).
+async function resolveUserIdForApiKey(apiKeyValue) {
+  if (!apiKeyValue) return null;
+  try {
+    const { getApiKeyByKey } = await import("./apiKeysRepo.js");
+    const k = await getApiKeyByKey(apiKeyValue);
+    return k?.userId || null;
+  } catch {
+    return null;
+  }
+}
+// (legacy per-key quota helpers removed; token quota is now per-USER — see getTokenUsageByUserSince)
+export async function getTokenUsageByApiKeySince(apiKeyValue, sinceIso) {
+  if (!apiKeyValue) return 0;
+  const db = await getAdapter();
+  try {
+    const row = db.get(
+      `SELECT COALESCE(SUM(COALESCE(promptTokens,0) + COALESCE(completionTokens,0)), 0) AS total
+       FROM usageHistory WHERE apiKey = ? AND timestamp >= ?`,
+      [apiKeyValue, sinceIso]
+    );
+    return Number(row?.total) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Recent requests by a specific user (for personal quota / usage views).
+// Returns the most recent `limit` rows from usageHistory tagged with userId.
+export async function getRecentRequestsByUser(userId, limit = 50) {
+  if (!userId) return [];
+  const db = await getAdapter();
+  try {
+    const rows = db.all(
+      `SELECT timestamp, provider, model, endpoint, apiKey, cost, status, promptTokens, completionTokens
+       FROM usageHistory WHERE userId = ?
+       ORDER BY id DESC LIMIT ?`,
+      [userId, limit]
+    );
+    return rows.map((r) => ({
+      timestamp: r.timestamp,
+      provider: r.provider,
+      model: r.model,
+      endpoint: r.endpoint,
+      apiKeyMasked: maskApiKey(r.apiKey),
+      cost: r.cost,
+      status: r.status,
+      promptTokens: r.promptTokens || 0,
+      completionTokens: r.completionTokens || 0,
+      tokens: (r.promptTokens || 0) + (r.completionTokens || 0),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Per-model token breakdown for a user since a timestamp (for the personal usage chart).
+export async function getUsageByUserSince(userId, sinceIso) {
+  if (!userId) return [];
+  const db = await getAdapter();
+  try {
+    const rows = db.all(
+      `SELECT model,
+              SUM(COALESCE(promptTokens,0)) AS promptTokens,
+              SUM(COALESCE(completionTokens,0)) AS completionTokens,
+              COUNT(*) AS requests
+       FROM usageHistory WHERE userId = ? AND timestamp >= ?
+       GROUP BY model ORDER BY (promptTokens + completionTokens) DESC`,
+      [userId, sinceIso]
+    );
+    return rows.map((r) => ({
+      model: r.model,
+      promptTokens: Number(r.promptTokens) || 0,
+      completionTokens: Number(r.completionTokens) || 0,
+      requests: Number(r.requests) || 0,
+      tokens: (Number(r.promptTokens) || 0) + (Number(r.completionTokens) || 0),
+    }));
+  } catch {
+    return [];
+  }
 }
 
 function loadDaysInRange(adapter, maxDays) {

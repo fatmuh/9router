@@ -4,6 +4,7 @@ import {
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
+import { enforceApiKeyAccess, scopeErrorResponse } from "@/lib/auth/apiKeyScope.js";
 import { handleTtsCore } from "open-sse/handlers/ttsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -41,6 +42,13 @@ export async function handleTts(request) {
   }
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  if (apiKey) {
+    const scope = await enforceApiKeyAccess(apiKey, { model: modelStr });
+    if (!scope.ok) {
+      log.warn("AUTH", `Key scope rejected: ${scope.code} — ${scope.error}`);
+      return scopeErrorResponse(scope);
+    }
+  }
   if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
 
   // Combo expansion: model may be a combo name → run fallback/round-robin across models

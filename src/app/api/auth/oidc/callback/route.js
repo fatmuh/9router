@@ -10,6 +10,9 @@ import {
   verifyOidcIdToken,
 } from "@/lib/auth/oidc";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
+import { getUserByOidcSubject } from "@/lib/db/repos/usersRepo.js";
+import { getRoleById } from "@/lib/db/repos/rolesRepo.js";
+import { touchUserLogin } from "@/lib/localDb";
 
 function clearOidcCookies(cookieStore) {
   cookieStore.delete("oidc_state");
@@ -72,10 +75,45 @@ export async function GET(request) {
     });
 
     clearOidcCookies(cookieStore);
+
+    // ── RBAC: only pre-registered users (linked via oidcSubject) may log in via OIDC. ──
+    // Unknown OIDC identities are rejected — they must be registered by an admin first.
+    // Match against the `sub` claim OR the email (admins typically enter the email,
+    // which is easier to know than the opaque provider-specific `sub`).
+    const oidcSub = payload.sub || null;
+    const oidcEmail = pickOidcEmail(payload) || null;
+    if (!oidcSub) {
+      return NextResponse.redirect(new URL("/login?error=oidc_no_subject", getPublicOrigin(request)));
+    }
+
+    let user = oidcSub ? await getUserByOidcSubject(oidcSub) : null;
+    if (!user && oidcEmail) {
+      // Fallback: admin may have registered the email as the subject.
+      user = await getUserByOidcSubject(oidcEmail);
+    }
+    if (!user) {
+      const hint = oidcEmail ? ` (${oidcEmail})` : "";
+      return NextResponse.redirect(
+        new URL(`/login?error=${encodeURIComponent(`OIDC identity${hint} is not registered. Ask an admin to add your account with sub or email as the OIDC subject.`)}`, getPublicOrigin(request))
+      );
+    }
+    if (!user.isActive) {
+      return NextResponse.redirect(new URL("/login?error=account_paused", getPublicOrigin(request)));
+    }
+
+    await touchUserLogin(user.id);
+    const role = await getRoleById(user.roleId);
+
+    // Issue the SAME RBAC JWT as password login (carries userId/roleId → real permissions).
     await setDashboardAuthCookie(cookieStore, request, {
+      userId: user.id,
+      username: user.username,
+      roleId: user.roleId,
+      roleName: role?.name || null,
+      // keep OIDC provenance for auditing
       oidc: true,
-      oidcSub: payload.sub || null,
-      oidcEmail: pickOidcEmail(payload) || null,
+      oidcSub,
+      oidcEmail,
       oidcName: pickOidcDisplayName(payload),
     });
 

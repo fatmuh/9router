@@ -56,7 +56,6 @@ export async function getDashboardAuthSession(token) {
     return null;
   }
 }
-
 export async function setDashboardAuthCookie(cookieStore, request, claims = {}) {
   const token = await createDashboardAuthToken(claims);
   cookieStore.set("auth_token", token, {

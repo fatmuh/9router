@@ -9,6 +9,7 @@ import {
 } from "../services/auth.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
+import { enforceApiKeyAccess, scopeErrorResponse } from "@/lib/auth/apiKeyScope.js";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -83,6 +84,16 @@ export async function handleChat(request, clientRawRequest = null) {
   if (!modelStr) {
     log.warn("CHAT", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  }
+
+  // ── API Key scope enforcement (model whitelist / expiry / daily limit) ──
+  // Runs after basic validity; requires the resolved model string.
+  if (apiKey) {
+    const scope = await enforceApiKeyAccess(apiKey, { model: modelStr });
+    if (!scope.ok) {
+      log.warn("AUTH", `Key scope rejected: ${scope.code} — ${scope.error}`);
+      return scopeErrorResponse(scope);
+    }
   }
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots

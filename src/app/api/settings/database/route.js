@@ -1,20 +1,28 @@
 import { NextResponse } from "next/server";
 import { exportDb, getSettings, importDb } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
-import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
+import { getAuthContext, hasPermission } from "@/lib/auth/authContext";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
-const PASSWORD_HEADER = "x-9r-password";
 
-// CLI token requests are already trusted (local machine); skip password re-auth.
+// CLI token requests are already trusted (local machine); skip session re-auth.
 function isCliRequest(request) {
   return Boolean(request.headers.get(CLI_TOKEN_HEADER));
 }
 
+// Auth for the backup endpoint: the logged-in JWT session (settings.manage)
+// or a trusted CLI token. The legacy dashboard password fallback was removed.
+async function authorize(request) {
+  if (isCliRequest(request)) return true;
+  const ctx = await getAuthContext(request);
+  if (ctx && hasPermission(ctx, "settings.manage")) return true;
+  return false;
+}
+
 export async function GET(request) {
   try {
-    if (!isCliRequest(request) && !(await verifyDashboardPassword(request.headers.get(PASSWORD_HEADER)))) {
-      return NextResponse.json({ error: "Invalid password" }, { status: 401 });
+    if (!(await authorize(request))) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const payload = await exportDb();
     return NextResponse.json(payload);
@@ -26,10 +34,11 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
-    const { password, ...payload } = await request.json();
-    if (!isCliRequest(request) && !(await verifyDashboardPassword(password))) {
-      return NextResponse.json({ error: "Invalid password" }, { status: 401 });
+    const body = await request.json();
+    if (!(await authorize(request))) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const { password, ...payload } = body;
     await importDb(payload);
 
     // Ensure proxy settings take effect immediately after a DB import.

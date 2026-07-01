@@ -3,20 +3,22 @@
 import { useState, useEffect } from "react";
 import { Card, Button, Input } from "@/shared/components";
 
+const OIDC_ERROR_MESSAGES = {
+  oidc_no_subject: "OIDC provider did not return a subject identifier.",
+  account_paused: "Your account is paused. Contact an administrator.",
+  oidc_not_configured: "OIDC is not configured.",
+  oidc_invalid_state: "OIDC state mismatch — please try again.",
+  oidc_missing_code: "OIDC authorization code missing.",
+};
+
 export default function LoginPage() {
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [resetHint, setResetHint] = useState("");
   const [retryAfter, setRetryAfter] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [hasPassword, setHasPassword] = useState(null);
-  const [authMode, setAuthMode] = useState("password");
-  const [oidcConfigured, setOidcConfigured] = useState(false);
-  const [oidcLoginLabel, setOidcLoginLabel] = useState("Sign in with OIDC");
-  const [mustChange, setMustChange] = useState(false);
-  const [newPassword, setNewPassword] = useState("");
+  const [authConfig, setAuthConfig] = useState(null);
 
-  // Countdown for rate-limit
   useEffect(() => {
     if (retryAfter <= 0) return;
     const id = setInterval(() => setRetryAfter((s) => (s > 0 ? s - 1 : 0)), 1000);
@@ -25,223 +27,126 @@ export default function LoginPage() {
 
   useEffect(() => {
     async function checkAuth() {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
-
       try {
-        const res = await fetch(`${baseUrl}/api/auth/status`, {
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-
-        if (res.ok) {
-          const data = await res.json();
-          if (data.requireLogin === false) {
-            window.location.assign("/dashboard");
-            return;
-          }
-          setHasPassword(!!data.hasPassword);
-          setAuthMode(data.authMode || "password");
-          setOidcConfigured(data.oidcConfigured === true);
-          setOidcLoginLabel(data.oidcLoginLabel || "Sign in with OIDC");
-        } else {
-          // Safe fallback on non-OK response to avoid infinite loading state.
-          setHasPassword(true);
+        // If no users exist yet → go to setup wizard.
+        const s = await fetch("/api/setup");
+        if (s.ok) {
+          const sd = await s.json();
+          if (sd.needsSetup) { window.location.assign("/setup"); return; }
         }
-      } catch (err) {
-        clearTimeout(timeoutId);
-        setHasPassword(true);
-      }
+        // Load auth config (to show/hide OIDC button).
+        const r = await fetch("/api/auth/status");
+        if (r.ok) setAuthConfig(await r.json());
+
+        // Surface OIDC callback errors from the query string.
+        const params = new URLSearchParams(window.location.search);
+        const err = params.get("error");
+        if (err) {
+          setError(decodeURIComponent(err).replace(/\+/g, " ") || OIDC_ERROR_MESSAGES[err] || err);
+        }
+      } catch {}
     }
     checkAuth();
   }, []);
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    setResetHint("");
+  const showPasswordForm = !authConfig || authConfig.authMode !== "oidc";
+  const showOidcButton = authConfig?.oidcConfigured && (authConfig.authMode === "oidc" || authConfig.authMode === "both");
+  const oidcLabel = authConfig?.oidcLoginLabel || "Sign in with OIDC";
 
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ username, password }),
       });
-
+      const data = await res.json();
       if (res.ok) {
-        const data = await res.json();
-        if (data.mustChangePassword) {
-          setMustChange(true);
-          return;
-        }
         window.location.assign("/dashboard");
       } else {
-        const data = await res.json();
-        setError(data.error || "Invalid password");
-        if (data.resetHint) setResetHint(data.resetHint);
-        if (data.retryAfter) setRetryAfter(Number(data.retryAfter));
+        setError(data.error || "Login failed");
+        if (data.retryAfter) setRetryAfter(data.retryAfter);
+        if (data.needsSetup) window.location.assign("/setup");
       }
     } catch (err) {
-      setError("An error occurred. Please try again.");
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
-
-  // Force a new password before entering the dashboard (default + remote).
-  const handleSetNewPassword = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentPassword: password, newPassword }),
-      });
-      if (res.ok) {
-        window.location.assign("/dashboard");
-      } else {
-        const data = await res.json();
-        setError(data.error || "Failed to set password");
-      }
-    } catch (err) {
-      setError("An error occurred. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleOidcLogin = () => {
-    window.location.href = "/api/auth/oidc/start";
-  };
-
-  const oidcAvailable = oidcConfigured && ["oidc", "both"].includes(authMode);
-  const passwordAvailable = authMode !== "oidc" || !oidcConfigured;
-
-  // Show loading state while checking password
-  if (hasPassword === null) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-bg p-4">
-        <div className="text-center">
-          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <p className="text-text-muted mt-4">Loading...</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg p-4 relative overflow-hidden">
-      {/* Faint grid background */}
-      <div className="landing-grid absolute inset-0 pointer-events-none" aria-hidden="true" />
-      <div className="relative z-10 w-full max-w-md">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-primary mb-2">9Router</h1>
-          <p className="text-text-muted">
-            {authMode === "oidc" && oidcConfigured
-              ? "Sign in with your OIDC provider to access the dashboard"
-              : "Enter your password to access the dashboard"}
-          </p>
+    <div className="min-h-screen flex items-center justify-center bg-bg-base p-4">
+      <Card className="w-full max-w-sm p-8">
+        <div className="text-center mb-6">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary/10 text-primary mb-4">
+            <span className="material-symbols-outlined text-[32px]">lock</span>
+          </div>
+          <h1 className="text-xl font-bold text-text-main">Sign in to 9Router</h1>
         </div>
 
-        <Card>
-          {mustChange ? (
-            <form onSubmit={handleSetNewPassword} className="flex flex-col gap-4">
-              <p className="text-sm text-amber-600 dark:text-amber-400 text-center">
-                Set a new password before accessing the dashboard remotely.
-              </p>
-              <div className="flex flex-col gap-2">
-                <label className="text-sm font-medium">New password</label>
-                <Input
-                  type="password"
-                  placeholder="Enter new password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                  autoFocus
-                />
-                {error && <p className="text-xs text-red-500">{error}</p>}
+        {/* OIDC button (shown when authMode is oidc/both and OIDC is configured) */}
+        {showOidcButton && (
+          <div className={showPasswordForm ? "mb-4" : ""}>
+            <Button
+              variant="secondary"
+              fullWidth
+              icon="login"
+              onClick={() => { window.location.href = "/api/auth/oidc/start"; }}
+            >
+              {oidcLabel}
+            </Button>
+          </div>
+        )}
+
+        {/* Password form (hidden in oidc-only mode) */}
+        {showPasswordForm && (
+          <>
+            {showOidcButton && (
+              <div className="flex items-center gap-3 my-4">
+                <div className="h-px bg-border flex-1" />
+                <span className="text-xs text-text-muted uppercase">or</span>
+                <div className="h-px bg-border flex-1" />
               </div>
-              <Button type="submit" variant="primary" className="w-full" loading={loading} disabled={!newPassword}>
-                Set password
+            )}
+            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+              <Input
+                label="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+                autoComplete="username"
+                autoFocus
+              />
+              <Input
+                label="Password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="current-password"
+              />
+              {error && (
+                <p className="text-sm text-red-500 bg-red-500/10 rounded-lg px-3 py-2">{error}</p>
+              )}
+              {retryAfter > 0 && (
+                <p className="text-xs text-text-muted text-center">Try again in {retryAfter}s</p>
+              )}
+              <Button type="submit" fullWidth disabled={loading || !username || !password}>
+                {loading ? "Signing in…" : "Sign in"}
               </Button>
             </form>
-          ) : (
-          <div className="flex flex-col gap-4">
-            {oidcAvailable && (
-              <Button type="button" variant="primary" className="w-full" onClick={handleOidcLogin}>
-                {oidcLoginLabel}
-              </Button>
-            )}
+          </>
+        )}
 
-            {oidcAvailable && passwordAvailable && <div className="h-px bg-border/60" />}
-
-            {passwordAvailable ? (
-              <form onSubmit={handleLogin} className="flex flex-col gap-4">
-                {((authMode === "oidc" && !oidcConfigured) || (authMode === "both" && !oidcConfigured)) && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 text-center">
-                    OIDC login is enabled, but the issuer/client fields are not configured yet. Password login is still available for recovery.
-                  </p>
-                )}
-
-                {authMode === "both" && oidcConfigured && (
-                  <p className="text-xs text-text-muted text-center">
-                    Password and OIDC login are both enabled.
-                  </p>
-                )}
-
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-medium">Password</label>
-                  <Input
-                    type="password"
-                    placeholder="Enter password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    autoFocus={!oidcAvailable}
-                  />
-                  {error && <p className="text-xs text-red-500">{error}</p>}
-                  {retryAfter > 0 && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">
-                      Locked. Retry in <span className="font-mono">{retryAfter}s</span>.
-                    </p>
-                  )}
-                  {resetHint && (
-                    <p className="text-xs text-text-muted">
-                      Forgot password? Open <code className="bg-sidebar px-1 rounded">9router</code> CLI on the host → <b>Settings</b> → <b>Reset Password to Default</b>.
-                    </p>
-                  )}
-                </div>
-
-                <Button
-                  type="submit"
-                  variant="primary"
-                  className="w-full"
-                  loading={loading}
-                  disabled={retryAfter > 0}
-                >
-                  {retryAfter > 0 ? `Wait ${retryAfter}s` : "Login"}
-                </Button>
-
-                <p className="text-xs text-center text-text-muted mt-2">
-                  Default password is <code className="bg-sidebar px-1 rounded">123456</code>
-                </p>
-                {hasPassword === false && (
-                  <p className="text-xs text-center text-amber-600 dark:text-amber-400">
-                    Security risk: no password set. You will be asked to set one when logging in remotely.
-                  </p>
-                )}
-              </form>
-            ) : (
-              error && <p className="text-xs text-red-500">{error}</p>
-            )}
-          </div>
-          )}
-        </Card>
-      </div>
+        {/* Error display when oidc-only mode (no password form) */}
+        {!showPasswordForm && error && (
+          <p className="text-sm text-red-500 bg-red-500/10 rounded-lg px-3 py-2">{error}</p>
+        )}
+      </Card>
     </div>
   );
 }

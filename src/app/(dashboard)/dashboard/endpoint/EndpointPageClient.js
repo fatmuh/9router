@@ -24,10 +24,14 @@ export default function APIPageClient({ machineId }) {
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  // Current timestamp for expiry badge rendering (kept in state to satisfy render purity).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 60000); return () => clearInterval(t); }, []);
+  // API key form state (key inherits allowed-models/quota/expiry from its owner user)
+  const [editingKey, setEditingKey] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
-  const [requireLogin, setRequireLogin] = useState(true);
-  const [hasPassword, setHasPassword] = useState(true);
+  const [canManageTunnel, setCanManageTunnel] = useState(false);
  const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
 
  // Cloudflare Tunnel state
@@ -86,11 +90,7 @@ export default function APIPageClient({ machineId }) {
 
   const { copied, copy } = useCopyToClipboard();
 
-  // Security gate: block remote exposure while dashboard uses default password or login is off.
-  const isLoginUnsafe = !requireLogin || !hasPassword;
-  const unsafeReason = !requireLogin
-    ? "Enable \"Require login\" and set a custom password before activating the tunnel."
-    : "Change the default dashboard password before activating the tunnel.";
+  // (legacy dashboard-password security gate removed — RBAC + setup wizard handle auth now)
 
   // Auto-scroll install log
   useEffect(() => {
@@ -194,15 +194,19 @@ export default function APIPageClient({ machineId }) {
   const loadSettings = async () => {
     setTunnelChecking(true);
     try {
-      const [settingsRes, statusRes] = await Promise.all([
+      const [settingsRes, statusRes, authRes] = await Promise.all([
         fetch("/api/settings"),
-        fetch("/api/tunnel/status", { cache: "no-store" })
+        fetch("/api/tunnel/status", { cache: "no-store" }),
+        fetch("/api/auth/status", { cache: "no-store" }),
       ]);
+      if (authRes.ok) {
+        const ad = await authRes.json();
+        const perms = new Set(ad.permissions || []);
+        setCanManageTunnel(perms.has("tunnel.manage") || perms.has("settings.manage"));
+      }
       if (settingsRes.ok) {
         const data = await settingsRes.json();
         setRequireApiKey(data.requireApiKey || false);
-        setRequireLogin(data.requireLogin !== false);
-        setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
       }
       if (statusRes.ok) {
@@ -614,18 +618,51 @@ export default function APIPageClient({ machineId }) {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
+        body: JSON.stringify({
+          name: newKeyName,
+        }),
       });
       const data = await res.json();
 
       if (res.ok) {
         setCreatedKey(data.key);
         await fetchData();
-        setNewKeyName("");
+        resetKeyForm();
         setShowAddModal(false);
       }
     } catch (error) {
       console.log("Error creating key:", error);
+    }
+  };
+
+  const resetKeyForm = () => {
+    setNewKeyName("");
+  };
+
+  // Convert (value, unit) → milliseconds. 0/empty → null (no limit).
+  const windowToMs = (value, unit) => {
+    const n = Number(value);
+    if (!value || !Number.isFinite(n) || n <= 0) return null;
+    const mult = unit === "minutes" ? 60_000 : unit === "hours" ? 3_600_000 : unit === "days" ? 86_400_000 : 3_600_000;
+    return Math.floor(n * mult);
+  };
+  const handleSaveEdit = async () => {
+    if (!editingKey) return;
+    try {
+      const res = await fetch(`/api/keys/${editingKey.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editingKey.name,
+        }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setKeys((prev) => prev.map((k) => (k.id === editingKey.id ? { ...k, ...updated.key } : k)));
+        setEditingKey(null);
+      }
+    } catch (error) {
+      console.log("Error updating key scope:", error);
     }
   };
 
@@ -720,6 +757,7 @@ export default function APIPageClient({ machineId }) {
             copied={copied}
             onCopy={copy}
           />
+          {canManageTunnel && (<>
           {/* Cloudflare Tunnel */}
           <div className="flex items-center gap-2">
             <span className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[88px] text-center ${
@@ -797,10 +835,6 @@ export default function APIPageClient({ machineId }) {
                 size="sm"
                 icon="cloud_upload"
                 onClick={() => {
-                  if (isLoginUnsafe) {
-                    setTunnelStatus({ type: "error", message: `Security required: ${unsafeReason}` });
-                    return;
-                  }
                   if (!requireApiKey) {
                     setTunnelStatus({ type: "error", message: "Security required: Enable \"Require API key\" before activating the tunnel." });
                     return;
@@ -884,10 +918,6 @@ export default function APIPageClient({ machineId }) {
                 size="sm"
                 icon="vpn_lock"
                 onClick={() => {
-                  if (isLoginUnsafe) {
-                    setTsStatus({ type: "error", message: `Security required: ${unsafeReason}` });
-                    return;
-                  }
                   handleOpenTsModal();
                 }}
                 className="bg-linear-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white!"
@@ -896,38 +926,16 @@ export default function APIPageClient({ machineId }) {
               </Button>
             )}
           </div>
+          </>)}
         </div>
 
-        {/* Pre-enable security gate banner */}
-        {isLoginUnsafe && !tunnelEnabled && !tsEnabled && (
-          <div className="mt-4">
-            <SecurityWarning
-              message={unsafeReason}
-              action={{ label: "Open settings", href: "/dashboard/profile" }}
-            />
-          </div>
-        )}
-
-        {/* Security warnings when tunnel or tailscale is active */}
+        {/* Security warning when tunnel or tailscale is active */}
         {(tunnelEnabled || tsEnabled) && (
           <div className="mt-4 flex flex-col gap-2">
             {!requireApiKey && (
               <SecurityWarning
                 message="Require API key is disabled — your endpoint is publicly accessible without authentication."
                 action={{ label: "Enable", href: "#require-api-key" }}
-              />
-            )}
-            {(!requireLogin || !hasPassword) && (
-              <SecurityWarning
-                message={
-                  !requireLogin
-                    ? "Require login is disabled — anyone can access your dashboard via tunnel."
-                    : "Dashboard uses the default password — change it in Profile settings."
-                }
-                action={{
-                  label: !requireLogin ? "Enable" : "Change password",
-                  href: "/dashboard/profile",
-                }}
               />
             )}
           </div>
@@ -1027,8 +1035,49 @@ export default function APIPageClient({ machineId }) {
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
+                  {(key.allowedModels?.length > 0 || key.expiresAt || key.note) && (
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {key.allowedModels?.length > 0 ? (
+                        <span className="inline-flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded bg-primary/10 text-primary" title={`Allowed: ${key.allowedModels.join(", ")}`}>
+                          <span className="material-symbols-outlined text-[12px]">filter_alt</span>
+                          {key.allowedModels.length} model{key.allowedModels.length > 1 ? "s" : ""}
+                        </span>
+                      ) : null}
+                      {key.expiresAt && (() => {
+                        const expired = new Date(key.expiresAt).getTime() <= now;
+                        return (
+                          <span className={`inline-flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded ${expired ? "bg-red-500/10 text-red-500" : "bg-blue-500/10 text-blue-500"}`} title={`Expires: ${new Date(key.expiresAt).toLocaleString()}`}>
+                            <span className="material-symbols-outlined text-[12px]">schedule</span>
+                            {expired ? "Expired" : new Date(key.expiresAt).toLocaleDateString()}
+                          </span>
+                        );
+                      })()}
+                      {key.note && (
+                        <span className="inline-flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/5 text-text-muted" title={key.note}>
+                          <span className="material-symbols-outlined text-[12px]">sticky_note_2</span>
+                          {key.note.length > 20 ? key.note.slice(0, 20) + "…" : key.note}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {key.lastUsedAt && (
+                    <p className="text-[11px] text-text-muted/70 mt-1">Last used {new Date(key.lastUsedAt).toLocaleString()}</p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setEditingKey({
+                        ...key,
+                        _expiresAtInput: undefined,
+                        _noteInput: undefined,
+                      });
+                    }}
+                    className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
+                    title="Edit scope"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">tune</span>
+                  </button>
                   <Toggle
                     size="sm"
                     checked={key.isActive ?? true}
@@ -1067,7 +1116,7 @@ export default function APIPageClient({ machineId }) {
         title="Create API Key"
         onClose={() => {
           setShowAddModal(false);
-          setNewKeyName("");
+          resetKeyForm();
         }}
       >
         <div className="flex flex-col gap-4">
@@ -1076,6 +1125,7 @@ export default function APIPageClient({ machineId }) {
             value={newKeyName}
             onChange={(e) => setNewKeyName(e.target.value)}
             placeholder="Production Key"
+            autoFocus
           />
           <div className="flex gap-2">
             <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
@@ -1084,7 +1134,7 @@ export default function APIPageClient({ machineId }) {
             <Button
               onClick={() => {
                 setShowAddModal(false);
-                setNewKeyName("");
+                resetKeyForm();
               }}
               variant="ghost"
               fullWidth
@@ -1093,6 +1143,7 @@ export default function APIPageClient({ machineId }) {
             </Button>
           </div>
         </div>
+
       </Modal>
 
       {/* Created Key Modal */}
@@ -1128,6 +1179,28 @@ export default function APIPageClient({ machineId }) {
             Done
           </Button>
         </div>
+      </Modal>
+
+      {/* Edit Key Scope Modal */}
+      <Modal
+        isOpen={!!editingKey}
+        title={`Edit “${editingKey?.name || ""}”`}
+        onClose={() => setEditingKey(null)}
+      >
+        {editingKey && (
+          <div className="flex flex-col gap-4">
+            <Input
+              label="Key Name"
+              value={editingKey.name || ""}
+              onChange={(e) => setEditingKey({ ...editingKey, name: e.target.value })}
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <Button onClick={handleSaveEdit} fullWidth>Save</Button>
+              <Button onClick={() => setEditingKey(null)} variant="ghost" fullWidth>Cancel</Button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Enable Tunnel Modal */}

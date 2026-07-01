@@ -10,7 +10,6 @@ import { MEDIA_PROVIDER_KINDS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import Button from "./Button";
 import { ConfirmModal } from "./Modal";
-import NineRemotePromoModal from "./NineRemotePromoModal";
 
 // const VISIBLE_MEDIA_KINDS = ["embedding", "image", "imageToText", "tts", "stt", "webSearch", "webFetch", "video", "music"];
 const VISIBLE_MEDIA_KINDS = ["embedding", "image", "tts", "stt"];
@@ -18,36 +17,40 @@ const VISIBLE_MEDIA_KINDS = ["embedding", "image", "tts", "stt"];
 const COMBINED_WEB_ITEM = { id: "web", label: "Web Fetch & Search", icon: "travel_explore", href: "/dashboard/media-providers/web" };
 
 const navItems = [
-  { href: "/dashboard/endpoint", label: "Endpoint & Key", icon: "api" },
-  { href: "/dashboard/providers", label: "Providers", icon: "dns" },
+  { href: "/dashboard/endpoint", label: "Endpoint & Key", icon: "api", perm: "keys.own" },
+  { href: "/dashboard/my-models", label: "Models", icon: "lists" },
+  { href: "/dashboard/providers", label: "Providers", icon: "dns", perm: "providers.view" },
   // { href: "/dashboard/basic-chat", label: "Basic Chat", icon: "chat" }, // Hidden
-  { href: "/dashboard/combos", label: "Combos", icon: "layers" },
-  { href: "/dashboard/usage", label: "Usage", icon: "bar_chart" },
-  { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
-  { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings" },
-  { href: "/dashboard/cli-tools", label: "CLI Tools", icon: "terminal" },
+  { href: "/dashboard/combos", label: "Combos", icon: "layers", perm: "combos.manage" },
+  { href: "/dashboard/usage", label: "Usage", icon: "bar_chart", perm: "usage.view" },
+  { href: "/dashboard/token-quota", label: "Token Quota", icon: "speed", perm: "quota.view.own" },
+  { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage", perm: "quota.tracker" },
+  { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings", perm: "settings.manage" },
+  { href: "/dashboard/cli-tools", label: "CLI Tools", icon: "terminal", perm: "cli.tools" },
 ];
 
 const debugItems = [
-  { href: "/dashboard/console-log", label: "Console Log", icon: "terminal" },
-  { href: "/dashboard/translator", label: "Translator", icon: "translate" },
+  { href: "/dashboard/console-log", label: "Console Log", icon: "terminal", perm: "logs.view" },
+  { href: "/dashboard/translator", label: "Translator", icon: "translate", perm: "translator.view" },
 ];
 
 const systemItems = [
-  { href: "/dashboard/proxy-pools", label: "Proxy Pools", icon: "lan" },
-  { href: "/dashboard/skills", label: "Skills", icon: "extension" },
+  { href: "/dashboard/users", label: "Users", icon: "group", perm: "users.manage" },
+  { href: "/dashboard/roles", label: "Roles", icon: "shield", perm: "roles.manage" },
+  { href: "/dashboard/proxy-pools", label: "Proxy Pools", icon: "lan", perm: "providers.manage" },
+  { href: "/dashboard/skills", label: "Skills", icon: "extension", perm: "mcp.manage" },
 ];
 
 export default function Sidebar({ onClose }) {
   const pathname = usePathname();
   const [mediaOpen, setMediaOpen] = useState(false);
-  const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [shutdownCountdown, setShutdownCountdown] = useState(0);
   const [enableTranslator, setEnableTranslator] = useState(false);
+  const [permissions, setPermissions] = useState(new Set());
   const { copied, copy } = useCopyToClipboard(2000);
 
   const INSTALL_CMD = UPDATER_CONFIG.installCmdLatest;
@@ -56,6 +59,10 @@ export default function Sidebar({ onClose }) {
     fetch("/api/settings")
       .then(res => res.json())
       .then(data => { if (data.enableTranslator) setEnableTranslator(true); })
+      .catch(() => {});
+    fetch("/api/auth/status")
+      .then(res => res.json())
+      .then(data => { if (data.permissions) setPermissions(new Set(data.permissions)); })
       .catch(() => {});
   }, []);
 
@@ -105,6 +112,14 @@ export default function Sidebar({ onClose }) {
   // Note: legacy updater poll removed. New flow: copy install cmd + shutdown server,
   // user runs the command manually in another terminal.
 
+  // Hide the entire "System" section (header included) when no item under it is visible.
+  const mediaVisible = permissions.has("media.view");
+  const systemItemsVisible = systemItems.some((i) => !i.perm || permissions.has(i.perm));
+  const debugItemsVisible = debugItems.some(
+    (i) => (!i.perm || permissions.has(i.perm)) && (i.href !== "/dashboard/translator" || enableTranslator)
+  );
+  const settingsVisible = permissions.has("settings.manage");
+  const hasSystemItems = mediaVisible || systemItemsVisible || debugItemsVisible || settingsVisible;
 
   return (
     <>
@@ -157,7 +172,7 @@ export default function Sidebar({ onClose }) {
 
         {/* Navigation */}
         <nav className="flex-1 px-4 py-2 space-y-0.5 overflow-y-auto custom-scrollbar">
-          {navItems.map((item) => (
+          {navItems.filter((item) => !item.perm || permissions.has(item.perm)).map((item) => (
             <Link
               key={item.href}
               href={item.href}
@@ -182,12 +197,14 @@ export default function Sidebar({ onClose }) {
           ))}
 
           {/* System section */}
+          {hasSystemItems && (
           <div className="pt-3 mt-2 space-y-0.5">
             <p className="px-4 text-xs font-semibold text-text-muted/60 uppercase tracking-wider mb-2">
               System
             </p>
 
             {/* Media Providers accordion */}
+            {permissions.has("media.view") && (<>
             <button
               onClick={() => setMediaOpen((v) => !v)}
               className={cn(
@@ -237,8 +254,9 @@ export default function Sidebar({ onClose }) {
                 </Link>
               </div>
             )}
+            </>)}
 
-            {systemItems.map((item) => (
+            {systemItems.filter((item) => !item.perm || permissions.has(item.perm)).map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
@@ -263,7 +281,7 @@ export default function Sidebar({ onClose }) {
             ))}
 
             {/* Debug items (inside System section, before Settings) */}
-            {debugItems.map((item) => {
+            {debugItems.filter((item) => !item.perm || permissions.has(item.perm)).map((item) => {
               const show = item.href !== "/dashboard/translator" || enableTranslator;
               return show ? (
                 <Link
@@ -290,21 +308,8 @@ export default function Sidebar({ onClose }) {
               ) : null;
             })}
 
-            {/* Remote */}
-            <button
-              onClick={() => setShowRemoteModal(true)}
-              className={cn(
-                "flex items-center gap-3 px-3 py-1 rounded-lg transition-all group w-full",
-                "text-text-muted hover:bg-surface-2 hover:text-text-main"
-              )}
-            >
-              <span className="material-symbols-outlined text-[18px] group-hover:text-primary transition-colors">
-                computer
-              </span>
-              <span className="text-[13px] font-medium">Remote</span>
-            </button>
-
             {/* Settings */}
+            {permissions.has("settings.manage") && (
             <Link
               href="/dashboard/profile"
               onClick={onClose}
@@ -325,13 +330,12 @@ export default function Sidebar({ onClose }) {
               </span>
               <span className="text-[13px] font-medium">Settings</span>
             </Link>
+            )}
           </div>
+          )}
         </nav>
 
       </aside>
-
-      {/* Remote Promo Modal */}
-      <NineRemotePromoModal isOpen={showRemoteModal} onClose={() => setShowRemoteModal(false)} />
 
       {/* Update Confirmation Modal */}
       <ConfirmModal

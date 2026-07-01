@@ -71,6 +71,39 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_pp_status ON proxyPools(testStatus)",
     ],
   },
+  roles: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT UNIQUE NOT NULL",
+      description: "TEXT",
+      permissions: "TEXT NOT NULL",   // JSON array of permission keys
+      isSystem: "INTEGER DEFAULT 0",  // system roles (admin) can't be deleted
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+  },
+  users: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      username: "TEXT UNIQUE NOT NULL",
+      passwordHash: "TEXT",          // bcrypt; null for pure OIDC users
+      roleId: "TEXT NOT NULL",
+      isActive: "INTEGER DEFAULT 1",
+      oidcSubject: "TEXT",           // links to OIDC identity (optional)
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+      lastLoginAt: "TEXT",
+      // ── Per-user token quota (account-level, all keys combined) ──
+      limitTokens: "INTEGER",       // max tokens per window; null = no limit
+      limitWindowMs: "INTEGER",     // window duration in ms; null/0 = no limit
+      windowStartedAt: "TEXT",      // ISO datetime; anchor of current rolling window
+      allowedModels: "TEXT",        // JSON array of model ids/globs; null/empty = all models (account-wide)
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_users_role ON users(roleId)",
+      "CREATE INDEX IF NOT EXISTS idx_users_oidc ON users(oidcSubject)",
+    ],
+  },
   apiKeys: {
     columns: {
       id: "TEXT PRIMARY KEY",
@@ -79,8 +112,18 @@ export const TABLES = {
       machineId: "TEXT",
       isActive: "INTEGER DEFAULT 1",
       createdAt: "TEXT NOT NULL",
+      // ── Scoping fields (additive; auto-added by syncSchemaFromTables) ──
+      allowedModels: "TEXT",      // JSON array of model ids/globs; null/empty = all models
+      expiresAt: "TEXT",          // ISO datetime; null = never expires
+      note: "TEXT",               // free-form description
+      lastUsedAt: "TEXT",         // ISO datetime; auto-updated on each use
+      // ── RBAC: which user owns this key (null = claimed by first admin on migration) ──
+      userId: "TEXT",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
+      "CREATE INDEX IF NOT EXISTS idx_ak_user ON apiKeys(userId)",
+    ],
   },
   combos: {
     columns: {
@@ -110,6 +153,7 @@ export const TABLES = {
       model: "TEXT",
       connectionId: "TEXT",
       apiKey: "TEXT",
+      userId: "TEXT",               // RBAC: which user made the request (for per-user quota)
       endpoint: "TEXT",
       promptTokens: "INTEGER DEFAULT 0",
       completionTokens: "INTEGER DEFAULT 0",

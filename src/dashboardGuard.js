@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSettings, validateApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
+import { getAuthContext, hasPermission } from "@/lib/auth/authContext";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
@@ -29,12 +30,13 @@ const PUBLIC_API_PATHS = [
   "/api/auth/oidc",
   "/api/version",
   "/api/settings/require-login",
+  "/api/setup",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
 const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex"];
 
-// Always require JWT token regardless of requireLogin setting
+// Always require JWT session (sensitive operations)
 const ALWAYS_PROTECTED = [
   "/api/shutdown",
   "/api/settings/database",
@@ -44,7 +46,7 @@ const ALWAYS_PROTECTED = [
   "/api/oauth/kiro/auto-import",
 ];
 
-// Require auth, but allow through if requireLogin is disabled
+// Require auth (RBAC permission-checked per route)
 const PROTECTED_API_PATHS = [
   "/api/settings",
   "/api/keys",
@@ -78,7 +80,6 @@ const LOCAL_ONLY_PATHS = [
   "/api/tunnel/disable",
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
-  "/api/auth/reset-password",
   "/api/headroom/start",
   "/api/headroom/stop",
 ];
@@ -140,7 +141,7 @@ async function canAccessPublicLlmApi(request) {
 
 async function canAccessLocalOnlyRoute(request) {
   if (await hasValidCliToken(request)) return true;
-  // Browser on host: loopback Host + Origin (blocks tunnel/CSRF) + auth (JWT or requireLogin=false)
+  // Browser on host: loopback Host + Origin (blocks tunnel/CSRF) + auth (JWT)
   if (isLocalRequest(request) && await isAuthenticated(request)) return true;
   return false;
 }
@@ -160,10 +161,9 @@ async function loadSettings() {
 }
 
 async function isAuthenticated(request) {
-  if (await hasValidToken(request)) return true;
-  const settings = await loadSettings();
-  if (settings && settings.requireLogin === false) return true;
-  return false;
+  // RBAC: dashboard always requires a valid JWT session (per-user login).
+  // The legacy requireLogin=false bypass is removed.
+  return await hasValidToken(request);
 }
 
 function isPublicApi(pathname) {
@@ -178,6 +178,66 @@ export const __test__ = {
   canAccessPublicLlmApi,
   canAccessLocalOnlyRoute,
 };
+
+// ── RBAC permission requirements per route prefix ──────────────────────────────
+// Maps a pathname + method to the permission key required. Returns null if public/no-check.
+function requiredPermission(pathname, method) {
+  const write = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+  // Order matters: more specific first.
+  if (pathname.startsWith("/api/users") || pathname.startsWith("/api/roles")) return "users.manage";
+  if (pathname.startsWith("/api/settings") || pathname.startsWith("/api/shutdown")) return write ? "settings.manage" : null;
+  if (pathname.startsWith("/api/tunnel")) return write ? "tunnel.manage" : null;
+  if (pathname.startsWith("/api/tunnel/")) return "tunnel.manage";
+  if (pathname.startsWith("/api/keys")) {
+    // Listing/creating keys: own is enough unless viewing all (handled at repo level).
+    return "keys.own";
+  }
+  if (pathname.startsWith("/api/providers")) return write ? "providers.manage" : "providers.view";
+  if (pathname.startsWith("/api/provider-nodes")) return write ? "providers.nodes" : "providers.view";
+  if (pathname.startsWith("/api/combos")) return write ? "combos.manage" : null;
+  if (pathname.startsWith("/api/models")) return write ? "models.manage" : "models.view";
+  if (pathname.startsWith("/api/pricing")) return write ? "pricing.manage" : null;
+  if (pathname.startsWith("/api/usage/quota/all")) return "usage.view";
+  if (pathname.startsWith("/api/usage/quota")) return "quota.view.own";
+  if (pathname.startsWith("/api/usage")) return "usage.view";
+  if (pathname.startsWith("/api/media-providers")) return write ? "media.manage" : "media.view";
+  if (pathname.startsWith("/api/cli-tools")) return write ? "cli.tools" : null;
+  if (pathname.startsWith("/api/mitm")) return write ? "mitm.manage" : null;
+  if (pathname.startsWith("/api/mcp")) return write ? "mcp.manage" : null;
+  if (pathname.startsWith("/api/translator")) return "translator.view";
+  if (pathname.startsWith("/api/tags")) return null; // lightweight, allow authenticated
+  if (pathname.startsWith("/api/oauth")) return write ? "providers.manage" : null;
+  return null; // unknown /api/* → just needs auth
+}
+
+// Dashboard PAGE → required permission (mirrors the Sidebar nav perm).
+// Pages not listed here are open to any authenticated user (e.g. /dashboard, /dashboard/profile).
+const DASHBOARD_PAGE_PERMS = {
+  "/dashboard/endpoint": "keys.own",
+  "/dashboard/providers": "providers.view",
+  "/dashboard/combos": "combos.manage",
+  "/dashboard/usage": "usage.view",
+  "/dashboard/token-quota": "quota.view.own",
+  "/dashboard/quota": "quota.tracker",
+  "/dashboard/token-saver": "settings.manage",
+  "/dashboard/cli-tools": "cli.tools",
+  "/dashboard/users": "users.manage",
+  "/dashboard/roles": "roles.manage",
+  "/dashboard/proxy-pools": "providers.manage",
+  "/dashboard/skills": "mcp.manage",
+  "/dashboard/media-providers": "media.view",
+  "/dashboard/console-log": "logs.view",
+  "/dashboard/translator": "translator.view",
+  "/dashboard/profile": "settings.manage",
+};
+
+function pageRequiredPermission(pathname) {
+  // Match the longest prefix (e.g. /dashboard/providers/123 → /dashboard/providers).
+  for (const prefix of Object.keys(DASHBOARD_PAGE_PERMS)) {
+    if (pathname === prefix || pathname.startsWith(prefix + "/")) return DASHBOARD_PAGE_PERMS[prefix];
+  }
+  return null;
+}
 
 export async function proxy(request) {
   const { pathname } = request.nextUrl;
@@ -201,23 +261,27 @@ export async function proxy(request) {
     return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
   }
 
-  // Deny-by-default for /api/* — public allow-list bypasses, everything else requires auth.
+  // Deny-by-default for /api/* — public allow-list bypasses, everything else requires auth + permission.
   if (pathname.startsWith("/api/")) {
     if (isPublicApi(pathname)) return NextResponse.next();
-    if (await hasValidCliToken(request) || await isAuthenticated(request))
-      return NextResponse.next();
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // CLI token (local) bypasses RBAC — it's the host itself.
+    if (await hasValidCliToken(request)) return NextResponse.next();
+    const ctx = await getAuthContext(request);
+    if (!ctx) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const need = requiredPermission(pathname, request.method);
+    if (need && !hasPermission(ctx, need)) {
+      return NextResponse.json({ error: `Forbidden: missing permission "${need}"`, permission: need }, { status: 403 });
+    }
+    return NextResponse.next();
   }
 
   // Protect all dashboard routes
   if (pathname.startsWith("/dashboard")) {
-    let requireLogin = true;
     let tunnelDashboardAccess = true;
 
     try {
       const settings = await loadSettings();
       if (settings) {
-        requireLogin = settings.requireLogin !== false;
         tunnelDashboardAccess = settings.tunnelDashboardAccess === true;
 
         // Block tunnel/tailscale access if disabled (redirect to login)
@@ -231,16 +295,22 @@ export async function proxy(request) {
         }
       }
     } catch {
-      // On error, keep defaults (require login, block tunnel)
+      // On error, keep defaults (block tunnel)
     }
 
-    // If login not required, allow through
-    if (!requireLogin) return NextResponse.next();
-
-    // Verify JWT token
+    // RBAC: dashboard always requires a valid JWT session.
     const token = request.cookies.get("auth_token")?.value;
     if (token) {
       if (await verifyDashboardAuthToken(token)) {
+        // Permission gate: block dashboard pages the user's role can't access.
+        const needed = pageRequiredPermission(pathname);
+        if (needed) {
+          const ctx = await getAuthContext(request);
+          if (!ctx || !hasPermission(ctx, needed)) {
+            // Legacy tokens (pre-RBAC) are treated as admin in getAuthContext → allowed.
+            return NextResponse.redirect(new URL("/dashboard?forbidden=1", request.url));
+          }
+        }
         return NextResponse.next();
       } else {
         return NextResponse.redirect(new URL("/login", request.url));

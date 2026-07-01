@@ -70,6 +70,18 @@ async function initAdapter() {
 
   const { runMigrationOnce } = await import("./migrate.js");
   await runMigrationOnce(adapter);
+
+  // Expose the adapter BEFORE ensureSystemAdminRole, otherwise its getAdapter() call
+  // awaits this very initPromise → deadlock.
+  state.instance = adapter;
+
+  // Ensure the system admin role always exists (idempotent).
+  try {
+    const { ensureSystemAdminRole } = await import("./repos/rolesRepo.js");
+    await ensureSystemAdminRole();
+  } catch (e) {
+    console.warn("[DB] ensureSystemAdminRole failed:", e.message);
+  }
   return adapter;
 }
 

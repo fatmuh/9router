@@ -1,21 +1,41 @@
 import crypto from "crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { DATA_DIR } from "@/lib/dataDir";
 
-const API_KEY_SECRET = process.env.API_KEY_SECRET || "endpoint-proxy-api-key-secret";
+// Persisted per-install HMAC secret for the API-key CRC segment.
+// Priority: explicit env var > persisted random file > (generated + persisted).
+// Never falls back to a hardcoded literal.
+const SECRET_FILE = path.join(DATA_DIR, "api-key-secret");
+
+function loadApiKeySecret() {
+  if (process.env.API_KEY_SECRET) return process.env.API_KEY_SECRET;
+  try {
+    return fs.readFileSync(SECRET_FILE, "utf8").trim();
+  } catch {}
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const generated = crypto.randomBytes(32).toString("hex");
+  fs.writeFileSync(SECRET_FILE, generated, { mode: 0o600 });
+  return generated;
+}
+
+const API_KEY_SECRET = loadApiKeySecret();
 
 /**
- * Generate 6-char random keyId
+ * Generate 6-char random keyId (cryptographically secure).
  */
 function generateKeyId() {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = crypto.randomBytes(6);
   let result = "";
   for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+    result += chars[bytes[i] % chars.length];
   }
   return result;
 }
 
 /**
- * Generate CRC (8-char HMAC)
+ * Generate CRC (8-char HMAC).
  */
 function generateCrc(machineId, keyId) {
   return crypto
@@ -95,4 +115,3 @@ export function isNewFormatKey(apiKey) {
   const parsed = parseApiKey(apiKey);
   return parsed?.isNewFormat === true;
 }
-

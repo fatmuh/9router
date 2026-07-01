@@ -27,12 +27,9 @@ export default function ProfilePage() {
   const [isShuttingDown, setIsShuttingDown] = useState(false);
   const [settings, setSettings] = useState({ fallbackStrategy: "fill-first" });
   const [loading, setLoading] = useState(true);
-  const [passwords, setPasswords] = useState({ current: "", new: "", confirm: "" });
-  const [passStatus, setPassStatus] = useState({ type: "", message: "" });
-  const [passLoading, setPassLoading] = useState(false);
   const [dbLoading, setDbLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
-  const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "" });
+  const [dbConfirmOpen, setDbConfirmOpen] = useState(false);
   const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
     authMode: "password",
@@ -192,41 +189,6 @@ export default function ProfilePage() {
     }
   };
 
-  const handlePasswordChange = async (e) => {
-    e.preventDefault();
-    if (passwords.new !== passwords.confirm) {
-      setPassStatus({ type: "error", message: "Passwords do not match" });
-      return;
-    }
-
-    setPassLoading(true);
-    setPassStatus({ type: "", message: "" });
-
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          currentPassword: passwords.current,
-          newPassword: passwords.new,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (res.ok) {
-        setPassStatus({ type: "success", message: "Password updated successfully" });
-        setPasswords({ current: "", new: "", confirm: "" });
-      } else {
-        setPassStatus({ type: "error", message: data.error || "Failed to update password" });
-      }
-    } catch (err) {
-      setPassStatus({ type: "error", message: "An error occurred" });
-    } finally {
-      setPassLoading(false);
-    }
-  };
-
   const updateFallbackStrategy = async (strategy) => {
     try {
       const res = await fetch("/api/settings", {
@@ -290,21 +252,6 @@ export default function ProfilePage() {
       }
     } catch (err) {
       console.error("Failed to update combo sticky limit:", err);
-    }
-  };
-
-  const updateRequireLogin = async (requireLogin) => {
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requireLogin }),
-      });
-      if (res.ok) {
-        setSettings(prev => ({ ...prev, requireLogin }));
-      }
-    } catch (err) {
-      console.error("Failed to update require login:", err);
     }
   };
 
@@ -471,13 +418,12 @@ export default function ProfilePage() {
     }
   };
 
-  const handleExportDatabase = async (password) => {
+  const handleExportDatabase = async () => {
     setDbLoading(true);
     setDbStatus({ type: "", message: "" });
     try {
-      const res = await fetch("/api/settings/database", {
-        headers: { "x-9r-password": password },
-      });
+      // JWT session cookie is sent automatically; endpoint checks settings.manage.
+      const res = await fetch("/api/settings/database");
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to export database");
@@ -510,13 +456,14 @@ export default function ProfilePage() {
     if (!file) return;
     pendingImportRef.current = file;
     setDbStatus({ type: "", message: "" });
-    setDbAuth({ open: true, mode: "import", password: "" });
+    setDbConfirmOpen(true);
   };
 
-  const runImportDatabase = async (password) => {
+  const runImportDatabase = async () => {
     const file = pendingImportRef.current;
     if (!file) return;
     setDbLoading(true);
+    setDbConfirmOpen(false);
     try {
       const raw = await file.text();
       const payload = JSON.parse(raw);
@@ -524,7 +471,7 @@ export default function ProfilePage() {
       const res = await fetch("/api/settings/database", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, password }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -542,13 +489,9 @@ export default function ProfilePage() {
     }
   };
 
-  // Confirm password modal, then run export or import.
-  const handleDbAuthConfirm = async () => {
-    const { mode, password } = dbAuth;
-    setDbAuth({ open: false, mode: "", password: "" });
-    if (mode === "export") await handleExportDatabase(password);
-    else if (mode === "import") await runImportDatabase(password);
-  };
+  // (legacy password modal removed — auth now uses the logged-in JWT session)
+
+  // (legacy handleDbAuthConfirm removed)
 
   const observabilityEnabled = settings.enableObservability === true;
 
@@ -621,7 +564,7 @@ export default function ProfilePage() {
               <Button
                 variant="secondary"
                 icon="download"
-                onClick={() => setDbAuth({ open: true, mode: "export", password: "" })}
+                onClick={() => handleExportDatabase()}
                 loading={dbLoading}
                 className="w-full sm:w-auto"
               >
@@ -668,88 +611,6 @@ export default function ProfilePage() {
             <span className="text-sm text-text-muted">Display language</span>
             <span className="text-2xl">{LOCALE_FLAGS[locale] || "🌐"}</span>
           </button>
-        </Card>
-
-        {/* Security */}
-        <Card>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 rounded-lg bg-primary/10 text-primary shrink-0">
-              <span className="material-symbols-outlined text-[20px]">shield</span>
-            </div>
-            <h3 className="text-base sm:text-lg font-semibold">Security</h3>
-          </div>
-          <div className="flex flex-col gap-4">
-            <div className="flex items-start sm:items-center justify-between gap-4">
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Require login</p>
-                <p className="text-xs sm:text-sm text-text-muted">
-                  When ON, dashboard requires password. When OFF, access without login.
-                </p>
-              </div>
-              <Toggle
-                checked={settings.requireLogin === true}
-                onChange={() => updateRequireLogin(!settings.requireLogin)}
-                disabled={loading}
-              />
-            </div>
-            {settings.requireLogin === true && (
-              <form onSubmit={handlePasswordChange} className="flex flex-col gap-4 pt-4 border-t border-border/50">
-                {settings.hasPassword && (
-                  <div className="flex flex-col gap-2">
-                    <label className="text-xs sm:text-sm font-medium">Current Password</label>
-                    <Input
-                      type="password"
-                      placeholder="Enter current password"
-                      value={passwords.current}
-                      onChange={(e) => setPasswords({ ...passwords, current: e.target.value })}
-                      required
-                    />
-                  </div>
-                )}
-                {/* {!settings.hasPassword && (
-                  <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                    <p className="text-sm text-blue-600 dark:text-blue-400">
-                      Setting password for the first time. Leave current password empty or use default: <code className="bg-blue-500/20 px-1 rounded">123456</code>
-                    </p>
-                  </div>
-                )} */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="flex flex-col gap-2">
-                    <label className="text-xs sm:text-sm font-medium">New Password</label>
-                    <Input
-                      type="password"
-                      placeholder="Enter new password"
-                      value={passwords.new}
-                      onChange={(e) => setPasswords({ ...passwords, new: e.target.value })}
-                      required
-                    />
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <label className="text-xs sm:text-sm font-medium">Confirm New Password</label>
-                    <Input
-                      type="password"
-                      placeholder="Confirm new password"
-                      value={passwords.confirm}
-                      onChange={(e) => setPasswords({ ...passwords, confirm: e.target.value })}
-                      required
-                    />
-                  </div>
-                </div>
-
-                {passStatus.message && (
-                  <p className={`text-xs sm:text-sm ${passStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
-                    {passStatus.message}
-                  </p>
-                )}
-
-                <div className="pt-2">
-                  <Button type="submit" variant="primary" loading={passLoading} className="w-full sm:w-auto">
-                    {settings.hasPassword ? "Update Password" : "Set Password"}
-                  </Button>
-                </div>
-              </form>
-            )}
-          </div>
         </Card>
 
         {/* OIDC */}
@@ -1149,34 +1010,21 @@ export default function ProfilePage() {
         loading={isShuttingDown}
       />
 
-      <Modal
-        isOpen={dbAuth.open}
-        onClose={() => setDbAuth({ open: false, mode: "", password: "" })}
-        title="Confirm Password"
-        size="sm"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setDbAuth({ open: false, mode: "", password: "" })} disabled={dbLoading}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={handleDbAuthConfirm} loading={dbLoading} disabled={!dbAuth.password}>
-              Confirm
-            </Button>
-          </>
-        }
+      <ConfirmModal
+        isOpen={dbConfirmOpen}
+        onClose={() => setDbConfirmOpen(false)}
+        onConfirm={runImportDatabase}
+        title="Restore Database?"
+        confirmLabel="Replace All Data"
+        variant="danger"
       >
-        <p className="text-text-muted mb-3 text-sm">
-          Enter your current password to {dbAuth.mode === "export" ? "export" : "import"} the database.
+        <p className="text-text-muted text-sm">
+          This will <b className="text-red-500">replace ALL data</b> (providers, users, roles, API keys, usage, settings) with the contents of the backup file. This cannot be undone.
         </p>
-        <Input
-          type="password"
-          value={dbAuth.password}
-          onChange={(e) => setDbAuth((s) => ({ ...s, password: e.target.value }))}
-          onKeyDown={(e) => { if (e.key === "Enter" && dbAuth.password) handleDbAuthConfirm(); }}
-          placeholder="Current password"
-          autoFocus
-        />
-      </Modal>
+        <p className="text-text-muted text-sm mt-2">
+          A snapshot of the current database is saved automatically before the restore.
+        </p>
+      </ConfirmModal>
     </div>
   );
 }
