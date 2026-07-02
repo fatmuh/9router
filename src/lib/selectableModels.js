@@ -59,7 +59,11 @@ export async function buildSelectableModels() {
     const isCustomProvider = isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId);
     const matchedNode = providerNodes.find((n) => n.id === providerId);
     const connection = connections.find((c) => c.provider === providerId);
-    const displayName = matchedNode?.name || connection?.name || providerInfo.name;
+    // Group header: built-in providers show their canonical name (e.g. "OpenAI"),
+    // custom/compatible nodes show the user-defined node name. Never the OAuth email.
+    const displayName = isCustomProvider
+      ? (matchedNode?.name || providerInfo.name)
+      : providerInfo.name;
 
     let models = [];
 
