@@ -1,15 +1,14 @@
 import { NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/auth/authContext";
 import { getUserById } from "@/lib/db/repos/usersRepo.js";
+import { buildSelectableModels } from "@/lib/selectableModels";
+import { globToRegExp } from "@/lib/auth/apiKeyScope.js";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/my-models — the logged-in user's ALLOWED models (resolved against the
 // global selectable model list). If the user has no allowedModels whitelist →
 // returns { unlimited: true } (all models allowed).
-//
-// The actual global model list is served by /api/keys/models; here we only resolve
-// the user's filter so the client can show what they may use + copy.
 export async function GET(request) {
   const ctx = await getAuthContext(request);
   if (!ctx) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -17,18 +16,14 @@ export async function GET(request) {
   const user = ctx.userId ? await getUserById(ctx.userId) : null;
   const allowed = user?.allowedModels;
 
-  // Fetch the global model list (same source as the picker).
-  const base = request.nextUrl.origin;
-  const globalRes = await fetch(`${base}/api/keys/models`, { headers: { cookie: request.headers.get("cookie") || "" } });
-  const global = globalRes.ok ? await globalRes.json() : { groups: [], combos: [] };
+  // Build the global model list directly (no self-fetch — breaks behind proxies).
+  const global = await buildSelectableModels().catch(() => ({ groups: [], combos: [] }));
 
   if (!Array.isArray(allowed) || allowed.length === 0) {
     return NextResponse.json({ unlimited: true, ...global });
   }
 
   // allowed entries may be globs (e.g. "openai/*") or exact model values.
-  // Match against each model's `value` using the same glob matcher as enforcement.
-  const { globToRegExp } = await import("@/lib/auth/apiKeyScope.js");
   const patterns = allowed.map((p) => globToRegExp(p));
   const matches = (value) => patterns.some((re) => re.test(value));
 
