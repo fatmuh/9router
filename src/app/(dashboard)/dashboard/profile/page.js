@@ -31,6 +31,7 @@ export default function ProfilePage() {
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
   const [dbConfirmOpen, setDbConfirmOpen] = useState(false);
   const [llmDomainInput, setLlmDomainInput] = useState("");
+  const [dashDomainInput, setDashDomainInput] = useState("");
   const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
     authMode: "password",
@@ -208,6 +209,26 @@ export default function ProfilePage() {
     if (current.includes(d)) { setLlmDomainInput(""); return; }
     saveLlmDomains([...current, d]);
     setLlmDomainInput("");
+  };
+
+  const saveDashboardDomains = async (domains) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dashboardDomains: domains }),
+      });
+      if (res.ok) setSettings((prev) => ({ ...prev, dashboardDomains: domains }));
+    } catch (e) { console.error("Failed to save dashboard domains:", e); }
+  };
+
+  const addDashboardDomain = () => {
+    const d = dashDomainInput.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.+$/, "");
+    if (!d) return;
+    const current = settings.dashboardDomains || [];
+    if (current.includes(d)) { setDashDomainInput(""); return; }
+    saveDashboardDomains([...current, d]);
+    setDashDomainInput("");
   };
 
   const updateFallbackStrategy = async (strategy) => {
@@ -922,6 +943,44 @@ export default function ProfilePage() {
                 className="flex-1 px-3 py-2 rounded-lg border border-border bg-bg-input text-sm font-mono focus:outline-none focus:border-primary"
               />
               <Button onClick={addLlmDomain} icon="add" size="sm">Add</Button>
+            </div>
+          </div>
+        </Card>
+
+        {/* Dashboard Domains */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-amber-500/10 text-amber-500 shrink-0">
+              <span className="material-symbols-outlined text-[20px]">monitor</span>
+            </div>
+            <h3 className="text-base sm:text-lg font-semibold">Dashboard Domains</h3>
+          </div>
+          <div className="flex flex-col gap-3">
+            <p className="text-xs sm:text-sm text-text-muted">
+              Restrict which domains may show the dashboard, login &amp; setup pages. Non-listed domains get a silent 404. Empty = allow all domains. Localhost always bypasses.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(settings.dashboardDomains || []).map((d) => (
+                <span key={d} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-bg-subtle text-sm">
+                  <span className="font-mono text-xs">{d}</span>
+                  <button onClick={() => saveDashboardDomains((settings.dashboardDomains || []).filter((x) => x !== d))} className="text-text-muted hover:text-red-500" title="Remove">
+                    <span className="material-symbols-outlined text-[14px]">close</span>
+                  </button>
+                </span>
+              ))}
+              {(settings.dashboardDomains || []).length === 0 && (
+                <span className="text-xs text-text-muted italic">No restriction — all domains allowed</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={dashDomainInput}
+                onChange={(e) => setDashDomainInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && dashDomainInput.trim()) { e.preventDefault(); addDashboardDomain(); } }}
+                placeholder="router.moccilabs.com"
+                className="flex-1 px-3 py-2 rounded-lg border border-border bg-bg-input text-sm font-mono focus:outline-none focus:border-primary"
+              />
+              <Button onClick={addDashboardDomain} icon="add" size="sm">Add</Button>
             </div>
           </div>
         </Card>

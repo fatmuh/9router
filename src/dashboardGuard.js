@@ -274,6 +274,19 @@ export async function proxy(request) {
     return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
   }
 
+  // Domain allowlist for the dashboard/login (everything except AI endpoints + health).
+  // Localhost always bypasses (dev + CLI). Non-allowlisted remote hosts get a 404.
+  if (!pathname.startsWith("/api/health")) {
+    const dashSettings = await loadSettings();
+    const dashDomains = Array.isArray(dashSettings?.dashboardDomains) ? dashSettings.dashboardDomains : [];
+    if (dashDomains.length > 0 && !isLocalRequest(request)) {
+      const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
+      if (!dashDomains.includes(host)) {
+        return new NextResponse(null, { status: 404 });
+      }
+    }
+  }
+
   // Deny-by-default for /api/* — public allow-list bypasses, everything else requires auth + permission.
   if (pathname.startsWith("/api/")) {
     if (isPublicApi(pathname)) return NextResponse.next();
