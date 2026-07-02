@@ -30,6 +30,7 @@ export default function ProfilePage() {
   const [dbLoading, setDbLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
   const [dbConfirmOpen, setDbConfirmOpen] = useState(false);
+  const [llmDomainInput, setLlmDomainInput] = useState("");
   const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
     authMode: "password",
@@ -187,6 +188,26 @@ export default function ProfilePage() {
     } finally {
       setProxyLoading(false);
     }
+  };
+
+  const saveLlmDomains = async (domains) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ llmApiDomains: domains }),
+      });
+      if (res.ok) setSettings((prev) => ({ ...prev, llmApiDomains: domains }));
+    } catch (e) { console.error("Failed to save domains:", e); }
+  };
+
+  const addLlmDomain = () => {
+    const d = llmDomainInput.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.+$/, "");
+    if (!d) return;
+    const current = settings.llmApiDomains || [];
+    if (current.includes(d)) { setLlmDomainInput(""); return; }
+    saveLlmDomains([...current, d]);
+    setLlmDomainInput("");
   };
 
   const updateFallbackStrategy = async (strategy) => {
@@ -864,6 +885,44 @@ export default function ProfilePage() {
                 ? ` Combos rotate after ${settings.comboStickyRoundRobinLimit || 1} call${(settings.comboStickyRoundRobinLimit || 1) === 1 ? "" : "s"} per model.`
                 : " Combos always start with their first model."}
             </p>
+          </div>
+        </Card>
+
+        {/* AI API Domains */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-green-500/10 text-green-500 shrink-0">
+              <span className="material-symbols-outlined text-[20px]">share</span>
+            </div>
+            <h3 className="text-base sm:text-lg font-semibold">AI API Domains</h3>
+          </div>
+          <div className="flex flex-col gap-3">
+            <p className="text-xs sm:text-sm text-text-muted">
+              Restrict which domains may serve AI endpoints (<code>/v1/*</code>, <code>/v1beta/*</code>). Requests to AI paths from non-listed domains get a silent 404. Empty = allow all domains. Localhost always bypasses.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(settings.llmApiDomains || []).map((d) => (
+                <span key={d} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-bg-subtle text-sm">
+                  <span className="font-mono text-xs">{d}</span>
+                  <button onClick={() => saveLlmDomains((settings.llmApiDomains || []).filter((x) => x !== d))} className="text-text-muted hover:text-red-500" title="Remove">
+                    <span className="material-symbols-outlined text-[14px]">close</span>
+                  </button>
+                </span>
+              ))}
+              {(settings.llmApiDomains || []).length === 0 && (
+                <span className="text-xs text-text-muted italic">No restriction — all domains allowed</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={llmDomainInput}
+                onChange={(e) => setLlmDomainInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && llmDomainInput.trim()) { e.preventDefault(); addLlmDomain(); } }}
+                placeholder="api.moccilabs.com"
+                className="flex-1 px-3 py-2 rounded-lg border border-border bg-bg-input text-sm font-mono focus:outline-none focus:border-primary"
+              />
+              <Button onClick={addLlmDomain} icon="add" size="sm">Add</Button>
+            </div>
           </div>
         </Card>
 

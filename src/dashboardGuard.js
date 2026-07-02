@@ -259,6 +259,17 @@ export async function proxy(request) {
   }
 
   if (isPublicLlmApi(pathname)) {
+    // Domain allowlist for AI endpoints (empty list = allow all domains).
+    // Localhost always bypasses (dev + CLI). Non-allowlisted remote hosts get a
+    // stealthy 404 as if the AI API doesn't exist there.
+    const llmSettings = await loadSettings();
+    const allowedDomains = Array.isArray(llmSettings?.llmApiDomains) ? llmSettings.llmApiDomains : [];
+    if (allowedDomains.length > 0 && !isLocalRequest(request)) {
+      const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
+      if (!allowedDomains.includes(host)) {
+        return new NextResponse(null, { status: 404 });
+      }
+    }
     if (await canAccessPublicLlmApi(request)) return NextResponse.next();
     return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
   }
