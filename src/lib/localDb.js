@@ -14,6 +14,7 @@ export {
   getRecentRequestsByUser, getUsageByUserSince,
   getRoles, getRoleById, getRoleByName, ensureSystemAdminRole, createRole, updateRole, deleteRole,
   getUsers, getUserById, getUserByUsername, getUserByOidcSubject, countUsers, countActiveAdmins, createUser, updateUser, setUserPassword, touchUserLogin, deleteUser, verifyUserPassword,
+  logAudit, getAuditLog, getAuditActions,
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,
   getModelAliases, setModelAlias, deleteModelAlias,
