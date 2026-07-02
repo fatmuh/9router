@@ -192,6 +192,24 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
     ],
   },
+  auditLog: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      timestamp: "TEXT NOT NULL",
+      actorUserId: "TEXT",
+      actorUsername: "TEXT",
+      action: "TEXT NOT NULL",
+      targetType: "TEXT",
+      targetId: "TEXT",
+      ip: "TEXT",
+      meta: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_al_ts ON auditLog(timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_al_actor ON auditLog(actorUserId)",
+      "CREATE INDEX IF NOT EXISTS idx_al_action ON auditLog(action)",
+    ],
+  },
 };
 
 export function buildCreateTableSql(name, def) {

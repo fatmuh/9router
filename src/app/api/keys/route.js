@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getApiKeys, createApiKey, claimLegacyKeys } from "@/lib/localDb";
+import { getApiKeys, createApiKey, claimLegacyKeys, logAudit } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { getAuthContext, hasPermission } from "@/lib/auth/authContext";
 
@@ -40,6 +40,15 @@ export async function POST(request) {
     const { allowedModels, expiresAt, note } = body;
     const apiKey = await createApiKey(name, machineId, {
       allowedModels, expiresAt, note, userId: ctx.userId,
+    });
+
+    await logAudit({
+      action: "key.create",
+      actorUserId: ctx.userId,
+      actorUsername: ctx.username,
+      targetType: "apiKey",
+      targetId: apiKey.id,
+      meta: { name: apiKey.name },
     });
 
     return NextResponse.json({

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import { deleteApiKey, getApiKeyById, updateApiKey, logAudit } from "@/lib/localDb";
 import { getAuthContext, hasPermission } from "@/lib/auth/authContext";
 
 // Helper: can the current user manage this key? (owner OR keys.view.all)
@@ -64,6 +64,14 @@ export async function DELETE(request, { params }) {
     if (!(await canManageKey(ctx, existing))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     const deleted = await deleteApiKey(id);
     if (!deleted) return NextResponse.json({ error: "Key not found" }, { status: 404 });
+    await logAudit({
+      action: "key.delete",
+      actorUserId: ctx.userId,
+      actorUsername: ctx.username,
+      targetType: "apiKey",
+      targetId: id,
+      meta: { name: existing.name },
+    });
     return NextResponse.json({ message: "Key deleted successfully" });
   } catch (error) {
     console.log("Error deleting key:", error);

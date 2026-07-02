@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/auth/authContext";
-import { getUserById, verifyUserPassword, setUserPassword } from "@/lib/localDb";
+import { getUserById, verifyUserPassword, setUserPassword, logAudit } from "@/lib/localDb";
 
 // POST /api/auth/change-password — self-service: verify current, set new.
 export async function POST(request) {
@@ -28,6 +28,7 @@ export async function POST(request) {
     }
 
     await setUserPassword(user.id, newPassword);
+    await logAudit({ action: "user.change_password", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "user", targetId: user.id });
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: error.message || "Failed to change password" }, { status: 500 });

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRoleById, updateRole, deleteRole } from "@/lib/localDb";
+import { getRoleById, updateRole, deleteRole, logAudit } from "@/lib/localDb";
 import { getAuthContext } from "@/lib/auth/authContext";
 
 async function requireRoleManager(request) {
@@ -25,6 +25,7 @@ export async function PUT(request, { params }) {
   const body = await request.json();
   try {
     const updated = await updateRole(id, body);
+    await logAudit({ action: "role.update", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "role", targetId: id, meta: { name: updated?.name } });
     return NextResponse.json({ role: updated });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
@@ -38,6 +39,7 @@ export async function DELETE(request, { params }) {
   try {
     const ok = await deleteRole(id);
     if (!ok) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    await logAudit({ action: "role.delete", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "role", targetId: id });
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getUsers, createUser } from "@/lib/localDb";
+import { getUsers, createUser, logAudit } from "@/lib/localDb";
 import { getAuthContext } from "@/lib/auth/authContext";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +20,7 @@ export async function POST(request) {
   try {
     const { username, password, roleId, isActive, oidcSubject, allowedModels, limitTokens, limitWindowMs } = await request.json();
     const user = await createUser({ username, password, roleId, isActive, oidcSubject, allowedModels, limitTokens, limitWindowMs });
+    await logAudit({ action: "user.create", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "user", targetId: user.id, meta: { username } });
     return NextResponse.json({ user: { ...user, passwordHash: undefined } }, { status: 201 });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });

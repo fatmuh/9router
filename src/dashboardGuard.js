@@ -206,6 +206,7 @@ function requiredPermission(pathname, method) {
   if (pathname.startsWith("/api/mcp")) return write ? "mcp.manage" : null;
   if (pathname.startsWith("/api/translator")) return "translator.view";
   if (pathname.startsWith("/api/tags")) return null; // lightweight, allow authenticated
+  if (pathname.startsWith("/api/audit-log")) return "users.manage";
   if (pathname.startsWith("/api/oauth")) return write ? "providers.manage" : null;
   return null; // unknown /api/* → just needs auth
 }
@@ -227,6 +228,7 @@ const DASHBOARD_PAGE_PERMS = {
   "/dashboard/skills": "mcp.manage",
   "/dashboard/media-providers": "media.view",
   "/dashboard/console-log": "logs.view",
+  "/dashboard/audit-log": "users.manage",
   "/dashboard/translator": "translator.view",
   "/dashboard/profile": "settings.manage",
 };

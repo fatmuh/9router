@@ -78,6 +78,11 @@ export {
   saveRequestDetail, getRequestDetails, getRequestDetailById,
 } from "./repos/requestDetailsRepo.js";
 
+// Audit log
+export {
+  logAudit, getAuditLog, getAuditActions,
+} from "./repos/auditLogRepo.js";
+
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();
@@ -110,7 +115,7 @@ export async function exportDb() {
   out.usageHistory = db.all(`SELECT * FROM usageHistory`);
   out.usageDaily = db.all(`SELECT * FROM usageDaily`);
   out.requestDetails = db.all(`SELECT * FROM requestDetails`);
-
+  out.auditLog = db.all(`SELECT * FROM auditLog`);
   return out;
 }
 
@@ -149,6 +154,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM usageHistory`);
     db.run(`DELETE FROM usageDaily`);
     db.run(`DELETE FROM requestDetails`);
+    db.run(`DELETE FROM auditLog`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
 
     // Settings

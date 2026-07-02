@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getUserById, updateUser, deleteUser, setUserPassword } from "@/lib/localDb";
+import { getUserById, updateUser, deleteUser, setUserPassword, logAudit } from "@/lib/localDb";
 import { getAuthContext } from "@/lib/auth/authContext";
 
 async function requireUserManager(request) {
@@ -27,6 +27,7 @@ export async function PUT(request, { params }) {
     // password handled by separate reset route; here only role/active/username.
     const { username, roleId, isActive, oidcSubject, allowedModels, limitTokens, limitWindowMs } = body;
     const updated = await updateUser(id, { username, roleId, isActive, oidcSubject, allowedModels, limitTokens, limitWindowMs });
+    await logAudit({ action: "user.update", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "user", targetId: id, meta: { username, roleId, isActive } });
     return NextResponse.json({ user: { ...updated, passwordHash: undefined } });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
@@ -40,6 +41,7 @@ export async function DELETE(request, { params }) {
   try {
     const ok = await deleteUser(id);
     if (!ok) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    await logAudit({ action: "user.delete", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "user", targetId: id });
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
