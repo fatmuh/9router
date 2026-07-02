@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import { useTheme } from "@/shared/hooks/useTheme";
 import ChangelogModal from "./ChangelogModal";
-import { ConfirmModal, Modal } from "./Modal";
+import Modal, { ConfirmModal } from "./Modal";
 import { Button, Input } from "@/shared/components";
 
 function MenuItem({ icon, label, onClick, trailing, danger }) {
