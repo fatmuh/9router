@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { exportDb, getSettings, importDb, logAudit } from "@/lib/localDb";
-import { getAuthContext } from "@/lib/auth/authContext";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { getAuthContext, hasPermission } from "@/lib/auth/authContext";
 
@@ -16,17 +15,18 @@ function isCliRequest(request) {
 async function authorize(request) {
   if (isCliRequest(request)) return true;
   const ctx = await getAuthContext(request);
-  if (ctx && hasPermission(ctx, "settings.manage")) return true;
+  if (ctx && hasPermission(ctx, "settings.manage")) return ctx;
   return false;
 }
 
 export async function GET(request) {
   try {
-    if (!(await authorize(request))) {
+    const ctx = await authorize(request);
+    if (!ctx) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const payload = await exportDb();
-    await logAudit({ action: "backup.export", actorUserId: (await getAuthContext(request))?.userId, actorUsername: (await getAuthContext(request))?.username, targetType: "settings" });
+    await logAudit({ action: "backup.export", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "settings" });
     return NextResponse.json(payload);
   } catch (error) {
     console.log("Error exporting database:", error);
@@ -37,12 +37,13 @@ export async function GET(request) {
 export async function POST(request) {
   try {
     const body = await request.json();
-    if (!(await authorize(request))) {
+    const ctx = await authorize(request);
+    if (!ctx) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { password, ...payload } = body;
     await importDb(payload);
-    await logAudit({ action: "backup.import", actorUserId: (await getAuthContext(request))?.userId, actorUsername: (await getAuthContext(request))?.username, targetType: "settings" });
+    await logAudit({ action: "backup.import", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "settings" });
 
     // Ensure proxy settings take effect immediately after a DB import.
     try {
