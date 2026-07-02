@@ -88,34 +88,40 @@ export async function exportDb() {
   const db = await getAdapter();
   const { exportSettings } = await import("./repos/settingsRepo.js");
 
+  // Resilient table reader: a missing table/column on an older DB must not abort the whole export.
+  const safeAll = (sql, label) => {
+    try { return db.all(sql); } catch (e) { console.warn(`[exportDb] skipping ${label}:`, e?.message || e); return []; }
+  };
+  const safe = (label, fn) => { try { return fn(); } catch (e) { console.warn(`[exportDb] skipping ${label}:`, e?.message || e); return []; } };
+
   const out = {
     _format: "9router-db",
     _version: 2,
     _exportedAt: new Date().toISOString(),
-    settings: await exportSettings(),
-    providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    roles: db.all(`SELECT * FROM roles`).map((r) => ({ id: r.id, name: r.name, description: r.description || null, permissions: parseJson(r.permissions, []), isSystem: r.isSystem === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    users: db.all(`SELECT * FROM users`).map((r) => ({ id: r.id, username: r.username, passwordHash: r.passwordHash || null, roleId: r.roleId, isActive: r.isActive === 1, oidcSubject: r.oidcSubject || null, createdAt: r.createdAt, updatedAt: r.updatedAt, lastLoginAt: r.lastLoginAt || null, limitTokens: r.limitTokens != null ? Number(r.limitTokens) : null, limitWindowMs: r.limitWindowMs != null ? Number(r.limitWindowMs) : null, windowStartedAt: r.windowStartedAt || null, allowedModels: parseJson(r.allowedModels, null) })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, allowedModels: parseJson(r.allowedModels, []), expiresAt: r.expiresAt || null, note: r.note || null, lastUsedAt: r.lastUsedAt || null, userId: r.userId || null })),
-    combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    settings: await exportSettings().catch(() => ({})),
+    providerConnections: safeAll(`SELECT * FROM providerConnections`, "providerConnections").map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    providerNodes: safeAll(`SELECT * FROM providerNodes`, "providerNodes").map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    proxyPools: safeAll(`SELECT * FROM proxyPools`, "proxyPools").map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    roles: safeAll(`SELECT * FROM roles`, "roles").map((r) => ({ id: r.id, name: r.name, description: r.description || null, permissions: parseJson(r.permissions, []), isSystem: r.isSystem === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    users: safeAll(`SELECT * FROM users`, "users").map((r) => safe(`user ${r.id}`, () => ({ id: r.id, username: r.username, passwordHash: r.passwordHash || null, roleId: r.roleId, isActive: r.isActive === 1, oidcSubject: r.oidcSubject || null, createdAt: r.createdAt, updatedAt: r.updatedAt, lastLoginAt: r.lastLoginAt || null, limitTokens: r.limitTokens != null ? Number(r.limitTokens) : null, limitWindowMs: r.limitWindowMs != null ? Number(r.limitWindowMs) : null, windowStartedAt: r.windowStartedAt || null, allowedModels: parseJson(r.allowedModels, null) })) || r),
+    apiKeys: safeAll(`SELECT * FROM apiKeys`, "apiKeys").map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, allowedModels: parseJson(r.allowedModels, []), expiresAt: r.expiresAt || null, note: r.note || null, lastUsedAt: r.lastUsedAt || null, userId: r.userId || null })),
+    combos: safeAll(`SELECT * FROM combos`, "combos").map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
     mitmAlias: {},
     pricing: {},
   };
 
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'customModels'`)) out.customModels.push(parseJson(r.value));
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`)) out.mitmAlias[r.key] = parseJson(r.value);
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'pricing'`)) out.pricing[r.key] = parseJson(r.value);
+  for (const r of safeAll(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`, "kv.modelAliases")) out.modelAliases[r.key] = parseJson(r.value);
+  for (const r of safeAll(`SELECT key, value FROM kv WHERE scope = 'customModels'`, "kv.customModels")) out.customModels.push(parseJson(r.value));
+  for (const r of safeAll(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`, "kv.mitmAlias")) out.mitmAlias[r.key] = parseJson(r.value);
+  for (const r of safeAll(`SELECT key, value FROM kv WHERE scope = 'pricing'`, "kv.pricing")) out.pricing[r.key] = parseJson(r.value);
 
-  // Usage data (for full backup / migration).
-  out.usageHistory = db.all(`SELECT * FROM usageHistory`);
-  out.usageDaily = db.all(`SELECT * FROM usageDaily`);
-  out.requestDetails = db.all(`SELECT * FROM requestDetails`);
-  out.auditLog = db.all(`SELECT * FROM auditLog`);
+  // Usage data (for full backup / migration) — optional, never fatal.
+  out.usageHistory = safeAll(`SELECT * FROM usageHistory`, "usageHistory");
+  out.usageDaily = safeAll(`SELECT * FROM usageDaily`, "usageDaily");
+  out.requestDetails = safeAll(`SELECT * FROM requestDetails`, "requestDetails");
+  out.auditLog = safeAll(`SELECT * FROM auditLog`, "auditLog");
   return out;
 }
 
