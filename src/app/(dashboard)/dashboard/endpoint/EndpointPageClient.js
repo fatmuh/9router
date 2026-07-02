@@ -33,6 +33,7 @@ export default function APIPageClient({ machineId }) {
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [canManageTunnel, setCanManageTunnel] = useState(false);
   const [canManageSettings, setCanManageSettings] = useState(false);
+  const [apiDomain, setApiDomain] = useState(null);
  const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
 
  // Cloudflare Tunnel state
@@ -210,6 +211,8 @@ export default function APIPageClient({ machineId }) {
         const data = await settingsRes.json();
         setRequireApiKey(data.requireApiKey || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
+        const domains = Array.isArray(data.llmApiDomains) ? data.llmApiDomains : [];
+        setApiDomain(domains.length > 0 ? domains[0] : null);
       }
       if (statusRes.ok) {
         const data = await statusRes.json();
@@ -728,6 +731,11 @@ export default function APIPageClient({ machineId }) {
       setBaseUrl(`${window.location.origin}/v1`);
     }
   }, []);
+
+  // Prefer the configured AI API domain (if any) for the displayed endpoint.
+  useEffect(() => {
+    if (apiDomain) setBaseUrl(`https://${apiDomain}/v1`);
+  }, [apiDomain]);
 
   if (loading) {
     return (
