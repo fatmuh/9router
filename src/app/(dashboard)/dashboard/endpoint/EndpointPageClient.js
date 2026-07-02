@@ -32,6 +32,7 @@ export default function APIPageClient({ machineId }) {
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [canManageTunnel, setCanManageTunnel] = useState(false);
+  const [canManageSettings, setCanManageSettings] = useState(false);
  const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
 
  // Cloudflare Tunnel state
@@ -203,6 +204,7 @@ export default function APIPageClient({ machineId }) {
         const ad = await authRes.json();
         const perms = new Set(ad.permissions || []);
         setCanManageTunnel(perms.has("tunnel.manage") || perms.has("settings.manage"));
+        setCanManageSettings(perms.has("settings.manage"));
       }
       if (settingsRes.ok) {
         const data = await settingsRes.json();
@@ -968,6 +970,7 @@ export default function APIPageClient({ machineId }) {
           </Button>
         </div>
 
+        {canManageSettings && (
         <div className="flex items-center justify-between pb-4 mb-4 border-b border-border">
           <div>
             <p className="font-medium">Require API key</p>
@@ -980,6 +983,7 @@ export default function APIPageClient({ machineId }) {
             onChange={() => handleRequireApiKey(!requireApiKey)}
           />
         </div>
+        )}
 
         {isRemoteHost && !requireApiKey && (
           <div className="mb-4 -mt-2">
