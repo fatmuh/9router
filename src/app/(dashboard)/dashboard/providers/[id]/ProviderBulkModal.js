@@ -130,15 +130,37 @@ export default function ProviderBulkModal({
         connections: { imported: connsImported, skipped: connsSkipped },
         errors,
       });
+
+      // Auto-test so statuses aren't left "unknown".
+      let testSummary = null;
+      if (connsImported > 0) {
+        setProgress({ current: total, total, label: "testing connections…" });
+        try {
+          const tRes = await fetch("/api/providers/test-batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: "provider", providerId }),
+          });
+          const tData = await tRes.json();
+          if (tRes.ok && tData.summary) testSummary = tData.summary;
+        } catch {}
+        setProgress(null);
+        setResult((prev) => (prev ? { ...prev, test: testSummary } : prev));
+      }
+
       setBusy(false);
       if (connsImported > 0 || nodesImported > 0) {
-        notify.success(`Imported ${nodesImported} node(s), ${connsImported} connection(s)`);
+        notify.success(
+          testSummary
+            ? `Imported ${connsImported} connection(s). Tested: ${testSummary.passed}/${testSummary.total} OK`
+            : `Imported ${nodesImported} node(s), ${connsImported} connection(s)`
+        );
         if (onImported) onImported();
       } else {
         notify.error("Nothing imported");
       }
     },
-    [notify, onImported]
+    [notify, onImported, providerId]
   );
 
   // Bulk add: transform pasted keys (one per line) → connections, import sequentially.
@@ -355,6 +377,11 @@ export default function ProviderBulkModal({
                 <span className="text-amber-600 dark:text-amber-400 mt-1">
                   {result.errors.length} error(s): {result.errors.slice(0, 3).map((e) => e.name || "?").join(", ")}
                   {result.errors.length > 3 ? "…" : ""}
+                </span>
+              )}
+              {result.test && (
+                <span className={`mt-1 ${result.test.failed > 0 ? "text-amber-600 dark:text-amber-400" : "text-green-600 dark:text-green-400"}`}>
+                  Tested: {result.test.passed}/{result.test.total} OK{result.test.failed > 0 ? `, ${result.test.failed} failed` : ""}
                 </span>
               )}
             </div>
