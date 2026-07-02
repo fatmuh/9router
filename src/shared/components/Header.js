@@ -181,6 +181,7 @@ export default function Header({ onMenuClick, showMenuButton = true }) {
   const pathname = usePathname();
   const [displayName, setDisplayName] = useState("");
   const [loginMethod, setLoginMethod] = useState("");
+  const [canShutdown, setCanShutdown] = useState(false);
 
   // Memoize page info to prevent unnecessary recalculations
   const pageInfo = useMemo(() => getPageInfo(pathname), [pathname]);
@@ -197,6 +198,7 @@ export default function Header({ onMenuClick, showMenuButton = true }) {
         if (!cancelled) {
           setDisplayName(data?.displayName || data?.oidcName || data?.oidcEmail || "");
           setLoginMethod(data?.loginMethod || "");
+          setCanShutdown(new Set(data?.permissions || []).has("settings.manage"));
         }
       } catch {
         if (!cancelled) {
@@ -312,7 +314,7 @@ export default function Header({ onMenuClick, showMenuButton = true }) {
         <HeaderSearch />
         <ThemeToggle />
         <HeaderLanguage />
-        <HeaderMenu onLogout={handleLogout} />
+        <HeaderMenu onLogout={handleLogout} canShutdown={canShutdown} />
       </div>
     </header>
   );
