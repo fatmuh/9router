@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Card, Button } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import ProviderIcon from "@/shared/components/ProviderIcon";
 
 export default function MyModelsPage() {
   const [data, setData] = useState(null);
@@ -82,12 +83,7 @@ export default function MyModelsPage() {
             return (
               <Card key={g.providerId || g.name} className="p-4">
                 <div className="flex items-center gap-2 mb-3">
-                  <span
-                    className="inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] font-bold text-white shrink-0"
-                    style={{ backgroundColor: g.color || "#666" }}
-                  >
-                    {(g.name || "?").slice(0, 1).toUpperCase()}
-                  </span>
+                  <ProviderIcon src={g.icon} alt={g.name} size={20} className="object-contain rounded max-w-[20px] max-h-[20px]" fallbackText={(g.name || "?").slice(0, 2).toUpperCase()} fallbackColor={g.color} />
                   <h2 className="text-sm font-semibold">{g.name}</h2>
                   <span className="text-xs text-text-muted">{models.length}</span>
                 </div>

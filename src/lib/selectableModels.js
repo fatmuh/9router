@@ -111,10 +111,15 @@ export async function buildSelectableModels() {
       if (models.length === 0) continue;
     }
 
+    const iconPath = isCustomProvider
+      ? (isAnthropicCompatibleProvider(providerId) ? "/providers/anthropic-m.png" : "/providers/oai-cc.png")
+      : `/providers/${providerId}.png`;
+
     groups.push({
       providerId,
       name: displayName,
       color: providerInfo.color || "#666",
+      icon: iconPath,
       models: models.map((m) => ({ id: m.id, name: m.name, value: m.value, isCustom: !!m.isCustom })),
     });
   }
