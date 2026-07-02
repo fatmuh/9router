@@ -21,6 +21,7 @@ export async function GET(request, { params }) {
 export async function PUT(request, { params }) {
   const g = await requireUserManager(request);
   if (g.error) return g.error;
+  const ctx = g.ctx;
   const { id } = await params;
   const body = await request.json();
   try {
@@ -37,6 +38,7 @@ export async function PUT(request, { params }) {
 export async function DELETE(request, { params }) {
   const g = await requireUserManager(request);
   if (g.error) return g.error;
+  const ctx = g.ctx;
   const { id } = await params;
   try {
     const ok = await deleteUser(id);
