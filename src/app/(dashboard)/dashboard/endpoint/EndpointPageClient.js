@@ -33,7 +33,8 @@ export default function APIPageClient({ machineId }) {
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [canManageTunnel, setCanManageTunnel] = useState(false);
   const [canManageSettings, setCanManageSettings] = useState(false);
-  const [apiDomain, setApiDomain] = useState(null);
+  const [apiDomains, setApiDomains] = useState([]);
+  const [apiDomainIdx, setApiDomainIdx] = useState(0);
  const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
 
  // Cloudflare Tunnel state
@@ -212,7 +213,8 @@ export default function APIPageClient({ machineId }) {
         setRequireApiKey(data.requireApiKey || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
         const domains = Array.isArray(data.llmApiDomains) ? data.llmApiDomains : [];
-        setApiDomain(domains.length > 0 ? domains[0] : null);
+        setApiDomains(domains);
+        setApiDomainIdx((i) => (i < domains.length ? i : 0));
       }
       if (statusRes.ok) {
         const data = await statusRes.json();
@@ -732,10 +734,10 @@ export default function APIPageClient({ machineId }) {
     }
   }, []);
 
-  // Prefer the configured AI API domain (if any) for the displayed endpoint.
+  // Prefer a configured AI API domain (if any) for the displayed endpoint.
   useEffect(() => {
-    if (apiDomain) setBaseUrl(`https://${apiDomain}/v1`);
-  }, [apiDomain]);
+    if (apiDomains.length > 0) setBaseUrl(`https://${apiDomains[apiDomainIdx] || apiDomains[0]}/v1`);
+  }, [apiDomains, apiDomainIdx]);
 
   if (loading) {
     return (
@@ -759,9 +761,21 @@ export default function APIPageClient({ machineId }) {
 
         {/* Endpoint rows */}
         <div className="flex flex-col gap-2">
+          {apiDomains.length > 1 && (
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[88px] text-center bg-surface-2 text-text-muted">Domain</span>
+              <select
+                value={apiDomainIdx}
+                onChange={(e) => setApiDomainIdx(Number(e.target.value))}
+                className="px-2 py-1 rounded-lg border border-border bg-bg-input text-xs font-mono focus:outline-none focus:border-primary"
+              >
+                {apiDomains.map((d, i) => <option key={d} value={i}>{d}</option>)}
+              </select>
+            </div>
+          )}
           {/* Local */}
           <EndpointRow
-            label="Local"
+            label={apiDomains.length > 0 ? "API" : "Local"}
             url={currentEndpoint}
             copyId="local_url"
             copied={copied}
