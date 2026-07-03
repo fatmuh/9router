@@ -8,6 +8,9 @@ const tracingRoot = process.env.NEXT_TRACING_ROOT_MODE === "workspace"
   ? join(projectRoot, "..")
   : projectRoot;
 const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE || "128mb";
+// Allow large DB backups to be imported via the dashboard (route handlers go
+// through the proxy/middleware layer which caps the request body otherwise).
+const middlewareClientMaxBodySize = process.env.NINEROUTER_MIDDLEWARE_MAX_BODY_SIZE || "512mb";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -28,6 +31,7 @@ const nextConfig = {
   experimental: {
     // #1529/#1572: LLM clients can send long context or base64 image payloads through /v1 rewrites.
     proxyClientMaxBodySize,
+    middlewareClientMaxBodySize,
     // Cache fetch responses across HMR refreshes for faster dev reloads.
     serverComponentsHmrCache: true,
   },
