@@ -25,8 +25,19 @@ export async function GET(request) {
     if (!ctx) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const full = new URL(request.url).searchParams.get("full") === "true";
     const payload = await exportDb();
-    await logAudit({ action: "backup.export", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "settings" });
+    // Config-only backup (default): drop the two heavy operational tables so the
+    // file stays small (a few MB) and round-trips through the browser fine.
+    // ?full=true restores the complete backup including request history.
+    if (!full) {
+      delete payload.usageHistory;
+      delete payload.requestDetails;
+      payload._scope = "config";
+    } else {
+      payload._scope = "full";
+    }
+    await logAudit({ action: full ? "backup.export_full" : "backup.export", actorUserId: ctx.userId, actorUsername: ctx.username, targetType: "settings" });
     return NextResponse.json(payload);
   } catch (error) {
     console.log("Error exporting database:", error);

@@ -31,6 +31,7 @@ export default function ProfilePage() {
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
   const [dbConfirmOpen, setDbConfirmOpen] = useState(false);
   const [llmDomainInput, setLlmDomainInput] = useState("");
+  const [backupFull, setBackupFull] = useState(false);
   const [dashDomainInput, setDashDomainInput] = useState("");
   const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
@@ -465,7 +466,7 @@ export default function ProfilePage() {
     setDbStatus({ type: "", message: "" });
     try {
       // JWT session cookie is sent automatically; endpoint checks settings.manage.
-      const res = await fetch("/api/settings/database");
+      const res = await fetch(`/api/settings/database${backupFull ? "?full=true" : ""}`);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to export database");
@@ -478,7 +479,7 @@ export default function ProfilePage() {
       const anchor = document.createElement("a");
       const stamp = new Date().toISOString().replace(/[.:]/g, "-");
       anchor.href = url;
-      anchor.download = `9router-backup-${stamp}.json`;
+      anchor.download = `9router-backup-${backupFull ? "full-" : "config-"}${stamp}.json`;
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
@@ -602,6 +603,11 @@ export default function ProfilePage() {
                 <p className="text-xs sm:text-sm text-text-muted font-mono break-all">~/.9router/db/data.sqlite</p>
               </div>
             </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer mt-1">
+              <input type="checkbox" checked={backupFull} onChange={(e) => setBackupFull(e.target.checked)} className="accent-primary w-4 h-4" />
+              <span className="font-medium">Include full request history</span>
+              <span className="text-text-muted">(much larger file)</span>
+            </label>
             <div className="flex flex-col sm:flex-row gap-2">
               <Button
                 variant="secondary"
