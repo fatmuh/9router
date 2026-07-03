@@ -7,10 +7,10 @@ const projectRoot = dirname(fileURLToPath(import.meta.url));
 const tracingRoot = process.env.NEXT_TRACING_ROOT_MODE === "workspace"
   ? join(projectRoot, "..")
   : projectRoot;
-const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE || "128mb";
-// Allow large DB backups to be imported via the dashboard (route handlers go
-// through the proxy/middleware layer which caps the request body otherwise).
-const middlewareClientMaxBodySize = process.env.NINEROUTER_MIDDLEWARE_MAX_BODY_SIZE || "512mb";
+// Body size cap for requests through the proxy/middleware layer — applies to both
+// /v1 LLM payloads AND dashboard API (incl. DB backup import). Default 512mb so
+// large backups import cleanly via the UI. Override via env.
+const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE || "512mb";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -30,8 +30,8 @@ const nextConfig = {
   env: {},
   experimental: {
     // #1529/#1572: LLM clients can send long context or base64 image payloads through /v1 rewrites.
+    // Also covers large DB backup imports via the dashboard.
     proxyClientMaxBodySize,
-    middlewareClientMaxBodySize,
     // Cache fetch responses across HMR refreshes for faster dev reloads.
     serverComponentsHmrCache: true,
   },
