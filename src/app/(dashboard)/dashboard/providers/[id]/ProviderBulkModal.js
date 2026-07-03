@@ -163,26 +163,38 @@ export default function ProviderBulkModal({
     [notify, onImported, providerId]
   );
 
-  // Bulk add: transform pasted keys (one per line) → connections, import sequentially.
+  // Bulk add: transform pasted lines → connections, import sequentially.
+  // For cloudflare-ai each line is `apikey|accountId` (account id required).
   const doBulkAddKeys = useCallback(async () => {
-    const keys = keysText
+    const lines = keysText
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter(Boolean);
-    if (keys.length === 0) {
+    if (lines.length === 0) {
       notify.error("Paste at least one key (one per line)");
       return;
     }
     setResult(null);
     const base = (providerName || providerId).toLowerCase().replace(/\s+/g, "-");
     const stamp = Date.now().toString().slice(-4);
-    const connections = keys.map((k, i) => ({
-      provider: providerId,
-      authType,
-      apiKey: k,
-      name: `${base}-${stamp}-${i + 1}`,
-      isActive: true,
-    }));
+    const isCloudflare = providerId === "cloudflare-ai";
+    const connections = lines.map((line, i) => {
+      let apiKey = line;
+      let providerSpecificData;
+      if (isCloudflare) {
+        const [k, accountId] = line.split("|").map((s) => (s || "").trim());
+        apiKey = k;
+        if (accountId) providerSpecificData = { accountId };
+      }
+      return {
+        provider: providerId,
+        authType,
+        apiKey,
+        name: `${base}-${stamp}-${i + 1}`,
+        isActive: true,
+        ...(providerSpecificData ? { providerSpecificData } : {}),
+      };
+    });
     await importSequentially(connections);
     setKeysText("");
   }, [keysText, providerId, providerName, authType, importSequentially, notify]);
@@ -315,13 +327,15 @@ export default function ProviderBulkModal({
         {tab === "bulk" && canBulkAdd && (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-text-muted">
-              Paste API keys for <b>{providerName || providerId}</b> — one key per line.
+              {providerId === "cloudflare-ai"
+                ? <>Paste credentials for <b>{providerName || providerId}</b> — one per line as <code className="bg-bg-subtle px-1 rounded">apikey|accountId</code>.</>
+                : <>Paste API keys for <b>{providerName || providerId}</b> — one key per line.</>}
             </p>
             <textarea
               value={keysText}
               onChange={(e) => setKeysText(e.target.value)}
               rows={8}
-              placeholder={"sk-key-1\nsk-key-2\nsk-key-3"}
+              placeholder={providerId === "cloudflare-ai" ? "cf-token-xxxx|abcdef1234567890" : "sk-key-1\nsk-key-2\nsk-key-3"}
               className="w-full font-mono text-xs rounded-lg border border-border bg-bg px-3 py-2 focus:outline-none focus:border-primary resize-y"
               disabled={busy}
             />
