@@ -72,6 +72,7 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+  let finishReasonSent = false; // track whether an OpenAI finish_reason chunk was ever emitted
 
   return new TransformStream({
     transform(chunk, controller) {
@@ -166,6 +167,7 @@ export function createSSEStream(options = {}) {
               }
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
+              if (isFinishChunk) finishReasonSent = true;
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
@@ -315,6 +317,7 @@ export function createSSEStream(options = {}) {
 
             // Inject estimated usage if finish chunk has no valid usage
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
+            if (isFinishChunk && item.choices?.[0]?.finish_reason) finishReasonSent = true;
             if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
               const estimated = estimateUsage(body, totalContentLength, sourceFormat);
               item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
@@ -368,6 +371,26 @@ export function createSSEStream(options = {}) {
           // Without it they can hang until timeout and trigger failover.
           // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
+
+          // Synthesize a finish chunk if the upstream (e.g. Cloudflare Wrangler workers)
+          // closed the stream without ever emitting a chunk with finish_reason set.
+          // Without it, OpenAI-compatible clients throw "Stream ended without finish_reason".
+          if (!finishReasonSent && totalContentLength > 0 &&
+              (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.OPENAI_RESPONSES) &&
+              !streamDoneSent && !isGeminiFamily) {
+            const synthFinish = {
+              id: `chatcmpl-${Date.now().toString(36)}`,
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model: model || "unknown",
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            };
+            const synthOutput = `data: ${JSON.stringify(synthFinish)}\n\n`;
+            reqLogger?.appendConvertedChunk?.(synthOutput);
+            controller.enqueue(sharedEncoder.encode(synthOutput));
+            finishReasonSent = true;
+          }
+
           if (!streamDoneSent && !isGeminiFamily) {
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
@@ -426,6 +449,24 @@ export function createSSEStream(options = {}) {
 
         // Synthesize response.failed if a Responses passthrough stream never reached a terminal event
         const keepsOpenAIResponsesFormat = targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES;
+
+        // Synthesize a finish chunk if the upstream (e.g. Cloudflare Wrangler workers)
+        // closed the stream without ever emitting a chunk with finish_reason set.
+        // Without it, OpenAI-compatible clients throw "Stream ended without finish_reason".
+        if (!finishReasonSent && totalContentLength > 0 &&
+            (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.OPENAI_RESPONSES)) {
+          const synthFinish = {
+            id: `chatcmpl-${Date.now().toString(36)}`,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: model || "unknown",
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          };
+          const synthOutput = formatSSE(synthFinish, sourceFormat);
+          reqLogger?.appendConvertedChunk?.(synthOutput);
+          controller.enqueue(sharedEncoder.encode(synthOutput));
+          finishReasonSent = true;
+        }
         if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
           const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
           reqLogger?.appendConvertedChunk?.(failedOutput);
