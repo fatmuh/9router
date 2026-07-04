@@ -143,6 +143,9 @@ export function createSSEStream(options = {}) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
       buffer += text;
+      if (provider === "cloudflare-wrangler") {
+        console.log("[CFW-FIX-MARKER] transform mode=" + mode + " chunkLen=" + text.length + " head=" + JSON.stringify(text.slice(0, 70)));
+      }
       reqLogger?.appendProviderChunk?.(text);
 
       const lines = buffer.split("\n");
