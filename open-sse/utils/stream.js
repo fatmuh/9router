@@ -375,7 +375,9 @@ export function createSSEStream(options = {}) {
           // Synthesize a finish chunk if the upstream (e.g. Cloudflare Wrangler workers)
           // closed the stream without ever emitting a chunk with finish_reason set.
           // Without it, OpenAI-compatible clients throw "Stream ended without finish_reason".
-          if (!finishReasonSent && totalContentLength > 0 &&
+          // Note: no totalContentLength guard — some workers open the stream then close
+          // immediately with zero content (model error), still needing a finish chunk.
+          if (!finishReasonSent &&
               (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.OPENAI_RESPONSES) &&
               !streamDoneSent && !isGeminiFamily) {
             const synthFinish = {
@@ -453,7 +455,7 @@ export function createSSEStream(options = {}) {
         // Synthesize a finish chunk if the upstream (e.g. Cloudflare Wrangler workers)
         // closed the stream without ever emitting a chunk with finish_reason set.
         // Without it, OpenAI-compatible clients throw "Stream ended without finish_reason".
-        if (!finishReasonSent && totalContentLength > 0 &&
+        if (!finishReasonSent &&
             (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.OPENAI_RESPONSES)) {
           const synthFinish = {
             id: `chatcmpl-${Date.now().toString(36)}`,
