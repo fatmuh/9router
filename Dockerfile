@@ -17,8 +17,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # open-sse/utils/stream.js) are actually recompiled into the standalone bundle.
 # Without this, Dokploy/BuildKit can serve stale webpack modules even after
 # the source changes, so runtime behaviour never updates.
-RUN rm -rf .next .next/cache node_modules/.cache || true
-RUN npm run build
+# Done in the SAME RUN as the build so any BuildKit cache mount on this step
+# is cleared right before compilation.
+RUN rm -rf .next .next/cache node_modules/.cache && npm run build
 
 FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
