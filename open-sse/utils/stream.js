@@ -176,6 +176,7 @@ export function createSSEStream(options = {}) {
             try {
               const maybe = tryParseLeadingJson(trimmed);
               if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
+                console.log("[CFW-FIX-MARKER] passthrough non-streaming completion -> converting to chunks");
                 const chunks = nonStreamingCompletionToChunks(maybe, model);
                 for (const c of chunks) {
                   const out = `data: ${JSON.stringify(c)}\n\n`;
@@ -306,6 +307,7 @@ export function createSSEStream(options = {}) {
           try {
             const maybe = tryParseLeadingJson(trimmed);
             if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
+              console.log("[CFW-FIX-MARKER] translate non-streaming completion -> converting to chunks");
               const chunks = nonStreamingCompletionToChunks(maybe, model);
               for (const c of chunks) {
                 const d = c.choices[0].delta;
