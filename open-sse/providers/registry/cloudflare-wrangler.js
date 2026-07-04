@@ -24,6 +24,7 @@ export default {
     baseUrl: "", // Will be set per-connection via providerSpecificData
     noAuth: true,
     format: "openai",
+    thinkingFormat: "openai",
   },
   models: [
     // Without @cf/ prefix (for workers that strip it)
