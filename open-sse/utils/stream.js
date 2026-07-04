@@ -143,9 +143,6 @@ export function createSSEStream(options = {}) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
       buffer += text;
-      if (provider === "cloudflare-wrangler") {
-        console.log("[CFW-FIX-MARKER] transform mode=" + mode + " chunkLen=" + text.length + " head=" + JSON.stringify(text.slice(0, 70)));
-      }
       reqLogger?.appendProviderChunk?.(text);
 
       const lines = buffer.split("\n");
@@ -179,7 +176,6 @@ export function createSSEStream(options = {}) {
             try {
               const maybe = tryParseLeadingJson(trimmed);
               if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
-                console.log("[CFW-FIX-MARKER] passthrough non-streaming completion -> converting to chunks");
                 const chunks = nonStreamingCompletionToChunks(maybe, model);
                 for (const c of chunks) {
                   const out = `data: ${JSON.stringify(c)}\n\n`;
@@ -310,7 +306,6 @@ export function createSSEStream(options = {}) {
           try {
             const maybe = tryParseLeadingJson(trimmed);
             if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
-              console.log("[CFW-FIX-MARKER] translate non-streaming completion -> converting to chunks");
               const chunks = nonStreamingCompletionToChunks(maybe, model);
               for (const c of chunks) {
                 const d = c.choices[0].delta;
