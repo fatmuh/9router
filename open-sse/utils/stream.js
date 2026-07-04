@@ -33,6 +33,35 @@ const STREAM_MODE = {
  * @param {string} options.model - Model name
  * @param {string} options.connectionId - Connection ID for usage tracking
  * @param {object} options.body - Request body (for input token estimation)
+// Try to parse a JSON object from the START of a string, tolerating trailing
+// garbage (e.g. "{"...}"}data: [DONE]" where the worker concatenated the JSON
+// and the [DONE] sentinel on the same line with no newline). Returns the parsed
+// object or null. Uses brace matching to find the object boundary.
+function tryParseLeadingJson(str) {
+  if (!str || str.charCodeAt(0) !== 123) return null; // must start with '{'
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (inStr) {
+      if (esc) esc = false;
+      else if (code === 92) esc = true;       // backslash
+      else if (code === 34) inStr = false;     // closing "
+    } else {
+      if (code === 34) inStr = true;           // opening "
+      else if (code === 123) depth++;          // {
+      else if (code === 125) {                  // }
+        depth--;
+        if (depth === 0) {
+          try { return JSON.parse(str.slice(0, i + 1)); } catch { return null; }
+        }
+      }
+    }
+  }
+  return null; // unbalanced braces / incomplete
+}
+
 // Convert a non-streaming OpenAI chat.completion object into proper SSE
 // streaming chunks. Used when an upstream (e.g. some Cloudflare Wrangler
 // workers) ignores stream:true and returns a single full JSON object instead
@@ -145,7 +174,7 @@ export function createSSEStream(options = {}) {
           // so OpenAI SDK clients don't throw "Stream ended without finish_reason".
           if (!trimmed.startsWith("data:") && trimmed.startsWith("{")) {
             try {
-              const maybe = JSON.parse(trimmed);
+              const maybe = tryParseLeadingJson(trimmed);
               if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
                 const chunks = nonStreamingCompletionToChunks(maybe, model);
                 for (const c of chunks) {
@@ -275,7 +304,7 @@ export function createSSEStream(options = {}) {
         // in the correct target format.
         if (trimmed.startsWith("{")) {
           try {
-            const maybe = JSON.parse(trimmed);
+            const maybe = tryParseLeadingJson(trimmed);
             if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
               const chunks = nonStreamingCompletionToChunks(maybe, model);
               for (const c of chunks) {
