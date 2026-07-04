@@ -13,6 +13,11 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
+# Bust webpack/Next.js persistent build cache so changed source files (e.g.
+# open-sse/utils/stream.js) are actually recompiled into the standalone bundle.
+# Without this, Dokploy/BuildKit can serve stale webpack modules even after
+# the source changes, so runtime behaviour never updates.
+RUN rm -rf .next .next/cache node_modules/.cache || true
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner
