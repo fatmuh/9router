@@ -211,8 +211,17 @@ export async function POST(request) {
           return NextResponse.json({ valid: false, error: "Missing Worker URL" });
         }
         const normalized = baseUrl.replace(/\/$/, "");
+        // Build correct URL
+        let testUrl;
+        if (normalized.endsWith("/chat/completions") || normalized.endsWith("/completions")) {
+          testUrl = normalized;
+        } else if (normalized.endsWith("/v1")) {
+          testUrl = `${normalized}/chat/completions`;
+        } else {
+          testUrl = `${normalized}/v1/chat/completions`;
+        }
         try {
-          const wranglerRes = await fetch(`${normalized}/chat/completions`, {
+          const wranglerRes = await fetch(testUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

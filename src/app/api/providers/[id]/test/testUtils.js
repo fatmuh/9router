@@ -715,8 +715,17 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const baseUrl = connection.providerSpecificData?.baseUrl || "";
         if (!baseUrl) return { valid: false, error: "No Worker URL configured" };
         const normalized = baseUrl.replace(/\/$/, "");
+        // Build correct URL
+        let testUrl;
+        if (normalized.endsWith("/chat/completions") || normalized.endsWith("/completions")) {
+          testUrl = normalized;
+        } else if (normalized.endsWith("/v1")) {
+          testUrl = `${normalized}/chat/completions`;
+        } else {
+          testUrl = `${normalized}/v1/chat/completions`;
+        }
         try {
-          const res = await fetchWithConnectionProxy(`${normalized}/chat/completions`, {
+          const res = await fetchWithConnectionProxy(testUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ model: "@cf/meta/llama-3.2-1b-instruct", messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false }),
