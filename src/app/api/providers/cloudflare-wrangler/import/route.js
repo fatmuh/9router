@@ -4,10 +4,48 @@ import {
   createProviderConnection,
   deleteProviderConnection,
 } from "@/models";
+import { getApiKeyByKey } from "@/lib/db/repos/apiKeysRepo.js";
 
 export const dynamic = "force-dynamic";
 
+// Validate API key from Authorization header or query param
+async function validateApiKey(request) {
+  // Check Authorization header: Bearer <key>
+  const authHeader = request.headers.get("authorization");
+  let apiKey = null;
+  
+  if (authHeader?.startsWith("Bearer ")) {
+    apiKey = authHeader.slice(7).trim();
+  }
+  
+  // Fallback to query param: ?api_key=<key>
+  if (!apiKey) {
+    const { searchParams } = new URL(request.url);
+    apiKey = searchParams.get("api_key") || searchParams.get("apiKey");
+  }
+  
+  if (!apiKey) {
+    return { valid: false, error: "API key required. Use Authorization: Bearer <key> or ?api_key=<key>" };
+  }
+  
+  // Check against database API keys
+  const keyRecord = await getApiKeyByKey(apiKey);
+  if (!keyRecord) {
+    return { valid: false, error: "Invalid API key" };
+  }
+  if (!keyRecord.isActive) {
+    return { valid: false, error: "API key is disabled" };
+  }
+  if (keyRecord.expiresAt && new Date(keyRecord.expiresAt) < new Date()) {
+    return { valid: false, error: "API key has expired" };
+  }
+  
+  return { valid: true, keyRecord };
+}
+
 // POST /api/providers/cloudflare-wrangler/import
+// Headers: Authorization: Bearer <api-key>
+//   or query: ?api_key=<key>
 // Body: { urls: ["https://worker1.workers.dev", "https://worker2.workers.dev"] }
 //   or: { urls: [{ url: "https://worker1.workers.dev", name: "Worker 1" }] }
 //
@@ -15,6 +53,11 @@ export const dynamic = "force-dynamic";
 // Old connections are deleted, new ones are created.
 export async function POST(request) {
   try {
+    // Validate API key
+    const auth = await validateApiKey(request);
+    if (!auth.valid) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
     const body = await request.json();
     const { urls } = body;
 
@@ -116,9 +159,16 @@ export async function POST(request) {
 }
 
 // GET /api/providers/cloudflare-wrangler/import
+// Headers: Authorization: Bearer <api-key>
+//   or query: ?api_key=<key>
 // Get current cloudflare-wrangler connections
-export async function GET() {
+export async function GET(request) {
   try {
+    // Validate API key
+    const auth = await validateApiKey(request);
+    if (!auth.valid) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
     const allConnections = await getProviderConnections();
     const connections = allConnections
       .filter((c) => c.provider === "cloudflare-wrangler")
