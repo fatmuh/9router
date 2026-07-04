@@ -84,6 +84,7 @@ export const MEDIA_PROVIDER_KINDS = [
 export const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
 export const ANTHROPIC_COMPATIBLE_PREFIX = "anthropic-compatible-";
 export const CUSTOM_EMBEDDING_PREFIX = "custom-embedding-";
+export const CLOUDFLARE_WRANGLER_ID = "cloudflare-wrangler";
 
 export function isOpenAICompatibleProvider(providerId) {
   return typeof providerId === "string" && providerId.startsWith(OPENAI_COMPATIBLE_PREFIX);
@@ -95,6 +96,10 @@ export function isAnthropicCompatibleProvider(providerId) {
 
 export function isCustomEmbeddingProvider(providerId) {
   return typeof providerId === "string" && providerId.startsWith(CUSTOM_EMBEDDING_PREFIX);
+}
+
+export function isCloudflareWranglerProvider(providerId) {
+  return providerId === CLOUDFLARE_WRANGLER_ID;
 }
 
 // All providers (combined)

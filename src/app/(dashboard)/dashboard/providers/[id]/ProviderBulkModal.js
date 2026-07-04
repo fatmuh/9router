@@ -165,6 +165,7 @@ export default function ProviderBulkModal({
 
   // Bulk add: transform pasted lines → connections, import sequentially.
   // For cloudflare-ai each line is `apikey|accountId` (account id required).
+  // For cloudflare-wrangler each line is just a worker URL (no api key needed).
   const doBulkAddKeys = useCallback(async () => {
     const lines = keysText
       .split(/\r?\n/)
@@ -178,6 +179,7 @@ export default function ProviderBulkModal({
     const base = (providerName || providerId).toLowerCase().replace(/\s+/g, "-");
     const stamp = Date.now().toString().slice(-4);
     const isCloudflare = providerId === "cloudflare-ai";
+    const isCloudflareWrangler = providerId === "cloudflare-wrangler";
     const connections = lines.map((line, i) => {
       let apiKey = line;
       let providerSpecificData;
@@ -185,6 +187,21 @@ export default function ProviderBulkModal({
         const [k, accountId] = line.split("|").map((s) => (s || "").trim());
         apiKey = k;
         if (accountId) providerSpecificData = { accountId };
+      }
+      if (isCloudflareWrangler) {
+        // For Wrangler, the line is the worker URL
+        const workerUrl = line.includes("|") ? line.split("|").slice(1).join("|").trim() : line;
+        const workerName = line.includes("|") ? line.split("|")[0].trim() : null;
+        apiKey = "";
+        providerSpecificData = { baseUrl: workerUrl, workerUrl };
+        return {
+          provider: providerId,
+          authType,
+          apiKey,
+          name: workerName || `${base}-${stamp}-${i + 1}`,
+          isActive: true,
+          providerSpecificData,
+        };
       }
       return {
         provider: providerId,
@@ -329,19 +346,21 @@ export default function ProviderBulkModal({
             <p className="text-sm text-text-muted">
               {providerId === "cloudflare-ai"
                 ? <>Paste credentials for <b>{providerName || providerId}</b> — one per line as <code className="bg-bg-subtle px-1 rounded">apikey|accountId</code>.</>
+                : providerId === "cloudflare-wrangler"
+                ? <>Paste worker URLs for <b>{providerName || providerId}</b> — one per line as <code className="bg-bg-subtle px-1 rounded">name|https://worker.workers.dev</code> or just <code className="bg-bg-subtle px-1 rounded">https://worker.workers.dev</code>.</>
                 : <>Paste API keys for <b>{providerName || providerId}</b> — one key per line.</>}
             </p>
             <textarea
               value={keysText}
               onChange={(e) => setKeysText(e.target.value)}
               rows={8}
-              placeholder={providerId === "cloudflare-ai" ? "cf-token-xxxx|abcdef1234567890" : "sk-key-1\nsk-key-2\nsk-key-3"}
+              placeholder={providerId === "cloudflare-ai" ? "cf-token-xxxx|abcdef1234567890" : providerId === "cloudflare-wrangler" ? "my-worker|https://my-worker.my-subdomain.workers.dev\nhttps://another-worker.workers.dev" : "sk-key-1\nsk-key-2\nsk-key-3"}
               className="w-full font-mono text-xs rounded-lg border border-border bg-bg px-3 py-2 focus:outline-none focus:border-primary resize-y"
               disabled={busy}
             />
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-text-muted">
-                {keysText.split(/\r?\n/).filter((l) => l.trim()).length} key(s) ready
+                {keysText.split(/\r?\n/).filter((l) => l.trim()).length} {providerId === "cloudflare-wrangler" ? "URL(s)" : "key(s)"} ready
               </span>
               <button
                 onClick={doBulkAddKeys}
@@ -349,7 +368,7 @@ export default function ProviderBulkModal({
                 className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
               >
                 <span className="material-symbols-outlined text-[16px]">playlist_add</span>
-                Add All Keys
+                {providerId === "cloudflare-wrangler" ? "Add All Workers" : "Add All Keys"}
               </button>
             </div>
           </div>

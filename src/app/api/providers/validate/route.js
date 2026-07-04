@@ -88,7 +88,7 @@ export async function POST(request) {
     const { apiKey, providerSpecificData } = body;
 
     const isNoAuth = AI_PROVIDERS[provider]?.noAuth === true;
-    if (!provider || (!apiKey && provider !== "ollama-local" && !isNoAuth)) {
+    if (!provider || (!apiKey && provider !== "ollama-local" && provider !== "cloudflare-wrangler" && !isNoAuth)) {
       return NextResponse.json({ error: "Provider and API key required" }, { status: 400 });
     }
 
@@ -202,6 +202,39 @@ export async function POST(request) {
           valid: isValid,
           error: isValid ? null : "Invalid API token or Account ID",
         });
+      }
+
+      if (provider === "cloudflare-wrangler") {
+        const { providerSpecificData } = body;
+        const baseUrl = providerSpecificData?.baseUrl || "";
+        if (!baseUrl) {
+          return NextResponse.json({ valid: false, error: "Missing Worker URL" });
+        }
+        const normalized = baseUrl.replace(/\/$/, "");
+        try {
+          const wranglerRes = await fetch(`${normalized}/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "@cf/meta/llama-3.2-1b-instruct",
+              messages: [{ role: "user", content: "test" }],
+              max_tokens: 1,
+            }),
+            signal: AbortSignal.timeout(10000),
+          });
+          // 404 means worker exists but path not found; 500 might mean model not available
+          // 200 or 400 means worker is reachable
+          isValid = wranglerRes.status !== 404;
+          return NextResponse.json({
+            valid: isValid,
+            error: isValid ? null : `Worker not reachable at ${normalized}`,
+          });
+        } catch (err) {
+          return NextResponse.json({
+            valid: false,
+            error: `Worker not reachable: ${err.message}`,
+          });
+        }
       }
 
       if (provider === "azure") {

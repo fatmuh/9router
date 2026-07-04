@@ -383,6 +383,28 @@ const PROVIDER_MODELS_CONFIG = {
       const data = await response.json();
       return { models: parseOpenAIStyleModels(data) };
     }
+  },
+  "cloudflare-wrangler": {
+    customResolver: async (connection) => {
+      const baseUrl = connection.providerSpecificData?.baseUrl || "";
+      if (!baseUrl) return { error: "No Worker URL configured", status: 400 };
+      const normalized = baseUrl.replace(/\/$/, "");
+      try {
+        const response = await fetch(`${normalized}/models`, {
+          method: "GET",
+          headers: { "Content-Type": "application/json" }
+        });
+        if (!response.ok) {
+          // If /models endpoint not available, return default models
+          return { models: [] };
+        }
+        const data = await response.json();
+        return { models: parseOpenAIStyleModels(data) };
+      } catch {
+        // Worker might not have /models endpoint, return empty
+        return { models: [] };
+      }
+    }
   }
 };
 

@@ -1,0 +1,45 @@
+export default {
+  id: "cloudflare-wrangler",
+  priority: 61,
+  hasFree: true,
+  alias: "cf-wrangler",
+  aliases: [
+    "cfw",
+    "wrangler",
+  ],
+  uiAlias: "cfw",
+  display: {
+    name: "Cloudflare Wrangler",
+    icon: "cloud",
+    color: "#F38020",
+    textIcon: "CW",
+    website: "https://developers.cloudflare.com/workers/wrangler/",
+    notice: {
+      text: "Cloudflare Workers deployed via Wrangler. Only requires the Worker URL — no API key needed.",
+    },
+  },
+  category: "freeTier",
+  noAuth: true,
+  transport: {
+    baseUrl: "", // Will be set per-connection via providerSpecificData
+    noAuth: true,
+    format: "openai",
+  },
+  models: [
+    { id: "meta/llama-3.2-1b-instruct", name: "Llama 3.2 1B Instruct" },
+    { id: "meta/llama-3.2-3b-instruct", name: "Llama 3.2 3B Instruct" },
+    { id: "meta/llama-3.1-8b-instruct-fp8-fast", name: "Llama 3.1 8B Instruct FP8 Fast" },
+    { id: "meta/llama-3.1-8b-instruct-awq", name: "Llama 3.1 8B Instruct AWQ" },
+    { id: "mistralai/mistral-small-3.1-24b-instruct", name: "Mistral Small 3.1 24B Instruct" },
+    { id: "meta/llama-3.1-70b-instruct-fp8-fast", name: "Llama 3.1 70B Instruct FP8 Fast" },
+    { id: "meta/llama-3.3-70b-instruct-fp8-fast", name: "Llama 3.3 70B Instruct FP8 Fast" },
+    { id: "deepseek-ai/deepseek-r1-distill-qwen-32b", name: "DeepSeek R1 Distill Qwen 32B" },
+    { id: "moonshotai/kimi-k2.5", name: "Kimi K2.5" },
+    { id: "moonshotai/kimi-k2.6", name: "Kimi K2.6" },
+    { id: "zai-org/glm-4.7-flash", name: "GLM 4.7 Flash" },
+    { id: "qwen/qwq-32b", name: "QwQ 32B" },
+    { id: "qwen/qwen2.5-coder-32b-instruct", name: "Qwen 2.5 Coder 32B Instruct" },
+  ],
+  serviceKinds: ["llm"],
+  passthroughModels: true,
+};
