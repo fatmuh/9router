@@ -476,6 +476,30 @@ export function createSSEStream(options = {}) {
         if (remaining) buffer += remaining;
 
         if (mode === STREAM_MODE.PASSTHROUGH) {
+          // Non-streaming JSON in the flush buffer: some Cloudflare Wrangler workers
+          // return a single chat.completion JSON object (no trailing newline, no SSE
+          // framing) even when stream:true was requested. Such JSON never enters the
+          // transform loop (it stays buffered until flush), so convert it to proper
+          // streaming chunks here before emitting [DONE].
+          if (buffer && buffer.trim().startsWith("{")) {
+            const maybe = tryParseLeadingJson(buffer.trim());
+            if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
+              const chunks = nonStreamingCompletionToChunks(maybe, model);
+              for (const c of chunks) {
+                const out = `data: ${JSON.stringify(c)}\n\n`;
+                reqLogger?.appendConvertedChunk?.(out);
+                controller.enqueue(sharedEncoder.encode(out));
+                const d = c.choices[0].delta;
+                if (d?.content) { totalContentLength += d.content.length; accumulatedContent += d.content; }
+                if (d?.reasoning_content) { totalContentLength += d.reasoning_content.length; accumulatedThinking += d.reasoning_content; }
+                if (c.choices[0].finish_reason) finishReasonSent = true;
+                sseEmittedCount++;
+              }
+              if (hasValidUsage(maybe.usage)) usage = mergeUsage(usage, maybe.usage);
+              buffer = ""; // consumed
+            }
+          }
+
           if (buffer) {
             let output = buffer;
             if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
