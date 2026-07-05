@@ -47,7 +47,7 @@ export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 10
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
-export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
+export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 10 * 1000);
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
@@ -66,9 +66,9 @@ export const RETRY_CONFIG = {
 // Backward compat: if value is a number, treated as attempts with RETRY_CONFIG.delayMs
 export const DEFAULT_RETRY_CONFIG = {
   429: { attempts: 0, delayMs: 0 },
-  502: { attempts: 3, delayMs: 3000 },
-  503: { attempts: 3, delayMs: 2000 },
-  504: { attempts: 2, delayMs: 3000 }
+  502: { attempts: 2, delayMs: 500 },
+  503: { attempts: 2, delayMs: 500 },
+  504: { attempts: 1, delayMs: 1000 }
 };
 
 // Normalize a retry entry to { attempts, delayMs }
