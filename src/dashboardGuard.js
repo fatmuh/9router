@@ -31,9 +31,6 @@ const PUBLIC_API_PATHS = [
   "/api/version",
   "/api/settings/require-login",
   "/api/setup",
-  "/api/providers/cloudflare-wrangler/import", // Bot integration endpoint (has its own API key auth)
-  "/api/providers/cloudflare-wrangler/add", // Append workers (has its own API key auth)
-  "/api/providers/cloudflare-wrangler/cleanup", // Delete expired workers (has its own API key auth)
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).

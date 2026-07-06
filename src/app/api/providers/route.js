@@ -7,7 +7,7 @@ import {
   getProxyPoolById,
 } from "@/models";
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
-import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider, isCloudflareWranglerProvider } from "@/shared/constants/providers";
+import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 
 export const dynamic = "force-dynamic";
@@ -112,19 +112,13 @@ export async function POST(request) {
       isOpenAICompatibleProvider(provider) ||
       isAnthropicCompatibleProvider(provider) ||
       isCustomEmbeddingProvider(provider) ||
-      isCloudflareWranglerProvider(provider);
-
     if (!provider || !isValidProvider) {
       return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
     }
     // Providers that don't require API key
-    const noAuthProviders = ["ollama-local", "cloudflare-wrangler"];
+    const noAuthProviders = ["ollama-local"];
     if (!apiKey && !noAuthProviders.includes(provider)) {
       return NextResponse.json({ error: `${isWebCookieProvider ? "Cookie value" : "API Key"} is required` }, { status: 400 });
-    }
-    // Cloudflare Wrangler requires a worker URL
-    if (provider === "cloudflare-wrangler" && !body.baseUrl && !body.workerUrl) {
-      return NextResponse.json({ error: "Worker URL is required for Cloudflare Wrangler" }, { status: 400 });
     }
     const connectionName = name || displayName || AI_PROVIDERS[provider]?.name;
     if (!connectionName) {

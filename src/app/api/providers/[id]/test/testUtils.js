@@ -711,31 +711,6 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
-      case "cloudflare-wrangler": {
-        const baseUrl = connection.providerSpecificData?.baseUrl || "";
-        if (!baseUrl) return { valid: false, error: "No Worker URL configured" };
-        const normalized = baseUrl.replace(/\/$/, "");
-        // Build correct URL
-        let testUrl;
-        if (normalized.endsWith("/chat/completions") || normalized.endsWith("/completions")) {
-          testUrl = normalized;
-        } else if (normalized.endsWith("/v1")) {
-          testUrl = `${normalized}/chat/completions`;
-        } else {
-          testUrl = `${normalized}/v1/chat/completions`;
-        }
-        try {
-          const res = await fetchWithConnectionProxy(testUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model: "@cf/meta/llama-3.2-1b-instruct", messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false }),
-          }, effectiveProxy);
-          const valid = res.status !== 404 && res.status !== 500;
-          return { valid, error: valid ? null : `Worker not reachable at ${normalized}` };
-        } catch (err) {
-          return { valid: false, error: `Worker not reachable: ${err.message}` };
-        }
-      }
       default:
         return { valid: false, error: "Provider test not supported" };
     }

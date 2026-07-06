@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
-import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCloudflareWranglerProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
+import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
@@ -112,11 +112,6 @@ export default function ProviderDetailPage() {
       triggerOAuthConnection();
       return;
     }
-    if (isCloudflareWrangler) {
-      setAddConnectionError("");
-      setShowAddApiKeyModal(true);
-      return;
-    }
     triggerApiKeyConnection();
   };
 
@@ -147,8 +142,6 @@ export default function ProviderDetailPage() {
   const isOAuth = !!OAUTH_PROVIDERS[providerId] || !!FREE_PROVIDERS[providerId] || authModes.includes("oauth");
   const supportsApiKeyAuth = !!APIKEY_PROVIDERS[providerId] || authModes.includes("apikey");
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
-  const isCloudflareWrangler = providerId === "cloudflare-wrangler";
-  const needsWorkerUrl = isCloudflareWrangler;
   const models = getModelsByProviderId(providerId);
   const providerAlias = getProviderAlias(providerId);
   
@@ -1353,7 +1346,7 @@ export default function ProviderDetailPage() {
       )}
 
       {/* Connections */}
-      {isFreeNoAuth && !needsWorkerUrl ? (
+      {isFreeNoAuth ? (
         <NoAuthProxyCard providerId={providerId} />
       ) : (
         <Card>
@@ -1493,7 +1486,7 @@ export default function ProviderDetailPage() {
                       icon="add"
                       onClick={triggerAddConnection}
                     >
-                      {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : (isCloudflareWrangler ? "Add Worker URL" : "Add Connection"))}
+                      {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
                     </Button>
                   </>
                 )}
@@ -1728,7 +1721,7 @@ export default function ProviderDetailPage() {
         onClose={() => setShowProviderBulk(false)}
         providerId={providerId}
         providerName={providerInfo?.name || providerId}
-        canBulkAdd={supportsApiKeyAuth || isCompatible || providerId === "cloudflare-wrangler"}
+        canBulkAdd={supportsApiKeyAuth || isCompatible}
         authType={isCompatible ? "apikey" : "apikey"}
         onImported={fetchConnections}
       />

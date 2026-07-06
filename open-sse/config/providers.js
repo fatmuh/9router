@@ -9,12 +9,6 @@ export function resolveOllamaLocalHost(credentials) {
   return (raw || OLLAMA_LOCAL_DEFAULT_HOST).replace(/\/$/, "");
 }
 
-export function resolveCloudflareWranglerBaseUrl(credentials) {
-  const raw = credentials?.providerSpecificData?.baseUrl?.trim();
-  if (!raw) throw new Error("cloudflare-wrangler requires a Worker URL in providerSpecificData.baseUrl");
-  return raw.replace(/\/$/, "");
-}
-
 // Region URLs single-source from registry xiaomi-tokenplan.transport
 export const XIAOMI_TOKENPLAN_REGIONS = PROVIDERS["xiaomi-tokenplan"]?.regions || {};
 export const XIAOMI_TOKENPLAN_DEFAULT_REGION = PROVIDERS["xiaomi-tokenplan"]?.defaultRegion;

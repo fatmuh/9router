@@ -6,12 +6,10 @@ import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
-const BULK_PLACEHOLDER_URL = `name1|https://your-worker.workers.dev\nname2|https://your-worker2.workers.dev\nhttps://unnamed-worker.workers.dev`;
 
 export default function AddApiKeyModal({ isOpen, provider, providerName, isCompatible, isAnthropic, authType, authHint, website, proxyPools, error, onSave, onBulkDone, onClose }) {
   const NONE_PROXY_POOL_VALUE = "__none__";
   const isOllamaLocal = provider === "ollama-local";
-  const isCloudflareWrangler = provider === "cloudflare-wrangler";
   const isCookie = authType === "cookie";
   const isXaiApiKey = provider === "xai" && !isCookie;
   const credentialLabel = isCookie ? "Cookie Value" : "API Key";
@@ -31,7 +29,6 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     priority: 1,
     proxyPoolId: NONE_PROXY_POOL_VALUE,
     ollamaHostUrl: "",
-    workerUrl: "",
   });
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
@@ -51,9 +48,6 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const buildProviderSpecificData = () => {
     if (isOllamaLocal && formData.ollamaHostUrl.trim()) {
       return { baseUrl: formData.ollamaHostUrl.trim() };
-    }
-    if (isCloudflareWrangler && formData.workerUrl.trim()) {
-      return { baseUrl: formData.workerUrl.trim() };
     }
     if (isAzure) {
       return {
@@ -91,12 +85,11 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   const handleSubmit = async () => {
     if (!provider) return;
-    if (!isOllamaLocal && !isCloudflareWrangler && !formData.apiKey) return;
-    if (!isOllamaLocal && !isCloudflareWrangler) {
+    if (!isOllamaLocal && !formData.apiKey) return;
+    if (!isOllamaLocal) {
       // Non-ollama providers require a name
       if (!formData.name) return;
     }
-    if (isCloudflareWrangler && !formData.workerUrl.trim()) return;
     if (isCompatible && !formData.defaultModel.trim()) return;
 
     setSaving(true);
@@ -120,14 +113,13 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
       }
 
       await onSave({
-        name: formData.name || (isOllamaLocal ? "Ollama Local" : (isCloudflareWrangler ? "Wrangler Worker" : "")),
-        apiKey: isCloudflareWrangler ? "" : formData.apiKey,
+        name: formData.name || (isOllamaLocal ? "Ollama Local" : ""),
+        apiKey: formData.apiKey,
         defaultModel: isCompatible ? formData.defaultModel.trim() : undefined,
         priority: formData.priority,
         proxyPoolId: formData.proxyPoolId === NONE_PROXY_POOL_VALUE ? null : formData.proxyPoolId,
         testStatus: isValid ? "active" : "unknown",
         providerSpecificData: buildProviderSpecificData(),
-        ...(isCloudflareWrangler ? { baseUrl: formData.workerUrl.trim(), workerUrl: formData.workerUrl.trim() } : {}),
       });
     } finally {
       setSaving(false);
@@ -143,17 +135,12 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     let failed = 0;
     for (let i = 0; i < lines.length; i++) {
       const parts = lines[i].split("|");
-      const baseName = parts.length >= 2 ? parts[0].trim() : (isCloudflareWrangler ? "Worker" : "Key");
+      const baseName = parts.length >= 2 ? parts[0].trim() : "Key";
       const value = parts.length >= 2 ? parts.slice(1).join("|").trim() : parts[0].trim();
       const name = `${baseName} ${i + 1}`;
       try {
         const body = { provider, name, priority: 1, testStatus: "unknown" };
-        if (isCloudflareWrangler) {
-          body.baseUrl = value;
-          body.workerUrl = value;
-        } else {
-          body.apiKey = value;
-        }
+        body.apiKey = value;
         const res = await fetch("/api/providers", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -172,7 +159,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   if (!provider) return null;
 
-  const modalTitle = isCloudflareWrangler ? `Add ${providerName || "Cloudflare Wrangler"} Worker URL` : `Add ${providerName || provider} ${credentialLabel}`;
+  const modalTitle = `Add ${providerName || provider} ${credentialLabel}`;
 
   return (
     <Modal isOpen={isOpen} title={modalTitle} onClose={onClose}>
@@ -185,10 +172,10 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
         {mode === "bulk" && (
           <div className="flex flex-col gap-3">
-            <p className="text-xs text-text-muted">{isCloudflareWrangler ? "One worker URL per line. Format: " : "One key per line. Format: "}<code>{isCloudflareWrangler ? "name|https://worker.workers.dev" : "name|apiKey"}</code> or just <code>{isCloudflareWrangler ? "https://worker.workers.dev" : "apiKey"}</code> (auto-named by index).</p>
+            <p className="text-xs text-text-muted">One key per line. Format: <code>name|apiKey</code> or just <code>apiKey</code> (auto-named by index).</p>
             <textarea
               className="w-full rounded border border-accent/30 bg-sidebar p-2 text-sm font-mono resize-y min-h-[140px] focus:outline-none focus:ring-1 focus:ring-primary"
-              placeholder={isCloudflareWrangler ? BULK_PLACEHOLDER_URL : BULK_PLACEHOLDER}
+              placeholder={BULK_PLACEHOLDER}
               value={bulkText}
               onChange={(e) => setBulkText(e.target.value)}
             />
@@ -285,20 +272,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             Leave blank to use <code>http://localhost:11434</code>. For remote Ollama, enter the full host URL (e.g. <code>http://192.168.1.10:11434</code>).
           </p>
         )}
-        {isCloudflareWrangler && (
-          <div className="bg-sidebar/50 p-4 rounded-lg border border-accent/20">
-            <h3 className="font-semibold mb-3 text-sm">Cloudflare Wrangler Worker</h3>
-            <Input
-              label="Worker URL"
-              value={formData.workerUrl}
-              onChange={(e) => setFormData({ ...formData, workerUrl: e.target.value })}
-              placeholder="https://your-worker.your-subdomain.workers.dev"
-            />
-            <p className="text-xs text-text-muted mt-2">
-              Enter the full URL of your deployed Cloudflare Worker. The worker should be compatible with OpenAI chat completions format.
-            </p>
-          </div>
-        )}
+
         {validationResult && (
           <Badge variant={validationResult === "success" ? "success" : "error"}>
             {validationResult === "success" ? "Valid" : "Invalid"}
@@ -387,7 +361,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         </p>
 
         <div className="flex gap-2">
-          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && !isCloudflareWrangler && (!formData.name || !formData.apiKey)) || (isCloudflareWrangler && !formData.workerUrl.trim()) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
+          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && (!formData.name || !formData.apiKey)) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
             {saving ? "Saving..." : "Save"}
           </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>

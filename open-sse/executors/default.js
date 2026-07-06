@@ -127,21 +127,7 @@ export class DefaultExecutor extends BaseExecutor {
       const path = this.provider.includes("responses") ? "/responses" : "/chat/completions";
       return `${normalized}${path}`;
     }
-    if (this.provider === "cloudflare-wrangler") {
-      const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
-      if (!baseUrl) throw new Error("cloudflare-wrangler requires a Worker URL in providerSpecificData.baseUrl");
-      const normalized = baseUrl.replace(/\/$/, "");
-      // Jika URL sudah mengandung path lengkap, gunakan apa adanya
-      if (normalized.endsWith("/chat/completions") || normalized.endsWith("/completions")) {
-        return normalized;
-      }
-      // Jika sudah mengandung /v1, tambahkan /chat/completions
-      if (normalized.endsWith("/v1")) {
-        return `${normalized}/chat/completions`;
-      }
-      // Default: tambahkan /v1/chat/completions
-      return `${normalized}/v1/chat/completions`;
-    }
+
     if (this.provider?.startsWith?.("anthropic-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE;
       const normalized = baseUrl.replace(/\/$/, "");
