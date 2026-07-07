@@ -100,3 +100,41 @@ export async function getActiveApifyKeys() {
   const db = await getAdapter();
   return db.all(`SELECT * FROM apifyKeys WHERE isActive = 1 ORDER BY usageCount ASC, createdAt ASC`).map(rowToKey);
 }
+
+/**
+ * Paginated query for server-side table rendering.
+ * Returns { rows, total, page, limit, totalPages }.
+ */
+export async function getApifyKeysPaginated({ page = 1, limit = 10, search = "", isActive } = {}) {
+  const db = await getAdapter();
+  const where = [];
+  const params = [];
+
+  if (search) {
+    where.push("(name LIKE ? OR token LIKE ?)");
+    params.push(`%${search}%`, `%${search}%`);
+  }
+  if (isActive !== undefined) {
+    where.push("isActive = ?");
+    params.push(isActive ? 1 : 0);
+  }
+
+  const whereClause = where.length ? ` WHERE ${where.join(" AND ")}` : "";
+  const total = db.get(`SELECT COUNT(*) as count FROM apifyKeys${whereClause}`, params)?.count || 0;
+  const offset = (page - 1) * limit;
+
+  const rows = db
+    .all(
+      `SELECT * FROM apifyKeys${whereClause} ORDER BY createdAt DESC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    )
+    .map(rowToKey);
+
+  return {
+    rows,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit) || 1,
+  };
+}

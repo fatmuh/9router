@@ -1,14 +1,30 @@
 import { NextResponse } from "next/server";
-import { getApifyKeys, createApifyKey, deleteApifyKey, updateApifyKey } from "@/lib/db/repos/apifyKeysRepo.js";
+import { getApifyKeysPaginated, createApifyKey, deleteApifyKey, updateApifyKey } from "@/lib/db/repos/apifyKeysRepo.js";
 import { getKeyStatus } from "@/lib/apify/client.js";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/apify/keys — list all keys (with masked tokens)
-export async function GET() {
+// GET /api/apify/keys — list keys (paginated, server-side)
+// Query: ?page=1&limit=10&search=xxx&isActive=true
+export async function GET(request) {
   try {
-    const keys = await getKeyStatus();
-    return NextResponse.json({ keys });
+    const { searchParams } = new URL(request.url);
+    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+    const limit = Math.max(1, Math.min(100, parseInt(searchParams.get("limit") || "10", 10)));
+    const search = searchParams.get("search") || "";
+    const isActiveParam = searchParams.get("isActive");
+    const isActive = isActiveParam === null ? undefined : isActiveParam === "true";
+
+    const { rows, total, totalPages } = await getApifyKeysPaginated({ page, limit, search, isActive });
+
+    // Mask tokens for display
+    const keys = rows.map((k) => ({
+      ...k,
+      tokenPreview: k.token ? `${k.token.substring(0, 12)}...${k.token.substring(k.token.length - 4)}` : "",
+      token: undefined,
+    }));
+
+    return NextResponse.json({ keys, total, page, limit, totalPages });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

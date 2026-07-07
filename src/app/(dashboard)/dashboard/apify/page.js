@@ -1,242 +1,83 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Card, Button, Badge } from "@/shared/components";
-
-// ── Quota progress bar (same pattern as ProviderLimits) ──
-function QuotaProgressBar({ label, used, total, percentage, unlimited, unit }) {
-  const colors =
-    percentage > 70
-      ? { text: "text-green-500", bg: "bg-green-500", bgLight: "bg-green-500/10", emoji: "🟢" }
-      : percentage >= 30
-      ? { text: "text-yellow-500", bg: "bg-yellow-500", bgLight: "bg-yellow-500/10", emoji: "🟡" }
-      : { text: "text-red-500", bg: "bg-red-500", bgLight: "bg-red-500/10", emoji: "🔴" };
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between text-sm">
-        <span className="font-semibold text-text-primary">{label}</span>
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs">{colors.emoji}</span>
-          <span className={`font-medium ${colors.text}`}>
-            {unlimited ? "∞" : `${Math.round(100 - percentage)}%`}
-          </span>
-        </div>
-      </div>
-      {!unlimited && (
-        <div className={`h-2 rounded-full overflow-hidden ${colors.bgLight}`}>
-          <div
-            className={`h-full transition-all duration-300 ${colors.bg}`}
-            style={{ width: `${Math.min(percentage, 100)}%` }}
-          />
-        </div>
-      )}
-      <div className="flex items-center justify-between text-xs text-text-muted">
-        <span>{used?.toLocaleString()} / {total?.toLocaleString()} {unit}</span>
-      </div>
-    </div>
-  );
-}
-
-// ── Provider Limit Card (same pattern as ProviderLimits) ──
-function AccountCard({ account, keys, onRefresh }) {
-  const [refreshing, setRefreshing] = useState(false);
-  const planRaw = account?.plan?.id || account?.plan?.tier || (typeof account?.plan === "string" ? account.plan : "free");
-  const plan = (typeof planRaw === "string" ? planRaw : "free").toLowerCase();
-  const planVariants = { free: "default", platform: "default", pro: "primary", enterprise: "info" };
-
-  const handleRefresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try { await onRefresh(); } finally { setRefreshing(false); }
-  };
-
-  // Compute quotas from balance + planLimits
-  const quotas = [];
-  if (account?.balance) {
-    const b = account.balance;
-    quotas.push({
-      label: "Monthly Usage ($)",
-      used: b.usedUsd,
-      total: b.maxUsd,
-      unit: "USD",
-    });
-  }
-
-  return (
-    <Card padding="md" className="flex flex-col gap-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="size-10 rounded-lg flex items-center justify-center bg-[#F38020]/15">
-            <span className="material-symbols-outlined text-[20px]" style={{ color: "#F38020" }}>cloud</span>
-          </div>
-          <div>
-            <h3 className="font-semibold text-text-primary">
-              {account?.name || account?.username || "Apify Account"}
-            </h3>
-            <div className="flex items-center gap-2 mt-0.5">
-              {account?.username && (
-                <span className="text-xs text-text-muted">@{account.username}</span>
-              )}
-              <Badge variant={planVariants[plan] || "default"} size="sm">
-                {plan}
-              </Badge>
-              {account?.proxyUnlimited && (
-                <Badge variant="success" size="sm">Unlimited Proxy</Badge>
-              )}
-            </div>
-          </div>
-        </div>
-        {/* Balance badge */}
-        {account?.balance && (
-          <div className="text-right shrink-0">
-            <p className="text-xs text-text-muted">Remaining</p>
-            <p className={`text-lg font-bold ${account.balance.remainingUsd < 0.5 ? "text-red-500" : "text-green-500"}`}>
-              ${account.balance.remainingUsd.toFixed(2)}
-            </p>
-            <p className="text-[10px] text-text-muted">
-              ${account.balance.usedUsd.toFixed(4)} / ${account.balance.maxUsd.toFixed(2)}
-            </p>
-          </div>
-        )}
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
-          title="Refresh account info"
-        >
-          <span className={`material-symbols-outlined text-[20px] text-text-muted ${refreshing ? "animate-spin" : ""}`}>
-            refresh
-          </span>
-        </button>
-      </div>
-
-      {/* Error */}
-      {account?.error && (
-        <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20">
-          <div className="flex items-start gap-2">
-            <span className="material-symbols-outlined text-red-500 text-[20px]">error</span>
-            <p className="text-sm text-red-600 dark:text-red-400">{account.error}</p>
-          </div>
-        </div>
-      )}
-
-      {/* Loading shimmer */}
-      {account?.loading && (
-        <div className="space-y-4">
-          <div className="h-4 bg-black/5 dark:bg-white/5 rounded animate-pulse" />
-          <div className="h-2 bg-black/5 dark:bg-white/5 rounded animate-pulse" />
-        </div>
-      )}
-
-      {/* Quota progress bars */}
-      {!account?.error && !account?.loading && quotas.length > 0 && (
-        <div className="space-y-4">
-          {quotas.map((q) => {
-            const pct = q.total > 0 ? ((q.total - q.used) / q.total) * 100 : q.used > 0 ? 100 : 0;
-            const unlimited = q.total === 0 || q.total === null;
-            return (
-              <QuotaProgressBar
-                key={q.label}
-                label={q.label}
-                used={q.used}
-                total={q.total}
-                percentage={pct}
-                unlimited={unlimited}
-                unit={q.unit}
-              />
-            );
-          })}
-        </div>
-      )}
-
-      {/* Empty state */}
-      {!account?.error && !account?.loading && quotas.length === 0 && (
-        <div className="text-center py-6 text-text-muted">
-          <span className="material-symbols-outlined text-[48px] opacity-20">data_usage</span>
-          <p className="text-sm mt-2">No usage data available</p>
-        </div>
-      )}
-
-      {/* Keys list */}
-      {keys.length > 0 && (
-        <div className="border-t border-border-subtle pt-3">
-          <p className="text-xs font-medium text-text-muted mb-2">Keys ({keys.length})</p>
-          <div className="space-y-1.5">
-            {keys.map((k) => (
-              <div key={k.id} className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-text-muted">{k.tokenPreview}</span>
-                  <Badge variant={k.isActive ? "success" : "error"} className="text-[9px]">
-                    {k.isActive ? "Active" : "Off"}
-                  </Badge>
-                </div>
-                <span className="text-text-muted">{k.usageCount || 0} req</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-}
+import { Card, Button, Badge, Pagination, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/shared/components";
 
 // ── Main Page ──
 export default function ApifyPage() {
+  // Table state (server-side pagination)
   const [keys, setKeys] = useState([]);
-  const [accounts, setAccounts] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(10);
+  const [totalPages, setTotalPages] = useState(1);
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [loading, setLoading] = useState(true);
+
+  // Account data (still fetched separately for balance/plan)
+  const [accounts, setAccounts] = useState({});
+  const [accountLoading, setAccountLoading] = useState(false);
+
+  // Add modal
   const [addMode, setAddMode] = useState(false);
   const [bulkText, setBulkText] = useState("");
   const [addName, setAddName] = useState("");
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
-  const [lastUpdated, setLastUpdated] = useState(null);
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [countdown, setCountdown] = useState(60);
-  const intervalRef = useRef(null);
-  const countdownRef = useRef(null);
 
+  const searchTimer = useRef(null);
+
+  // Debounced search
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => {
+      setPage(1);
+      setSearch(searchInput);
+    }, 300);
+    return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
+  }, [searchInput]);
+
+  // Fetch keys (server-side paginated)
   const fetchKeys = useCallback(async () => {
+    setLoading(true);
     try {
-      const res = await fetch("/api/apify/keys");
+      const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+      if (search) params.set("search", search);
+      const res = await fetch(`/api/apify/keys?${params}`);
       const data = await res.json();
       setKeys(data.keys || []);
+      setTotal(data.total || 0);
+      setTotalPages(data.totalPages || 1);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, limit, search]);
 
+  useEffect(() => { fetchKeys(); }, [fetchKeys]);
+
+  // Fetch account info for current page keys only
   const fetchAccounts = useCallback(async () => {
+    if (keys.length === 0) return;
+    setAccountLoading(true);
     try {
       const res = await fetch("/api/apify/account");
       const data = await res.json();
-      setAccounts(data.accounts || []);
-      setLastUpdated(new Date());
+      const map = {};
+      for (const a of data.accounts || []) { map[a.id] = a; }
+      setAccounts(map);
     } catch (e) {
       console.error(e);
+    } finally {
+      setAccountLoading(false);
     }
-  }, []);
+  }, [keys]);
 
-  useEffect(() => { fetchKeys(); }, [fetchKeys]);
-  useEffect(() => { if (keys.length > 0) fetchAccounts(); }, [keys, fetchAccounts]);
+  useEffect(() => { if (keys.length > 0) fetchAccounts(); }, [fetchAccounts]);
 
-  // Auto-refresh (60s like quota page)
-  useEffect(() => {
-    if (!autoRefresh || keys.length === 0) return;
-    setCountdown(60);
-    countdownRef.current = setInterval(() => {
-      setCountdown((c) => {
-        if (c <= 1) { fetchAccounts(); return 60; }
-        return c - 1;
-      });
-    }, 1000);
-    return () => { if (countdownRef.current) clearInterval(countdownRef.current); };
-  }, [autoRefresh, keys.length, fetchAccounts]);
-
+  // Actions
   const handleAdd = async () => {
     const lines = bulkText.split("\n").map((l) => l.trim()).filter(Boolean);
     if (lines.length === 0) return;
@@ -261,31 +102,32 @@ export default function ApifyPage() {
   };
 
   const handleDelete = async (key) => {
-    if (!confirm(`Delete key "${key.name || key.id}"?`)) return;
-    try { await fetch(`/api/apify/keys?id=${key.id}`, { method: "DELETE" }); fetchKeys(); } catch (e) { console.error(e); }
+    if (!confirm(`Delete key "${key.name || key.tokenPreview}"?`)) return;
+    try {
+      await fetch(`/api/apify/keys?id=${key.id}`, { method: "DELETE" });
+      fetchKeys();
+    } catch (e) { console.error(e); }
   };
 
   const handleToggle = async (key) => {
-    try { await fetch("/api/apify/keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: key.id, isActive: !key.isActive }) }); fetchKeys(); } catch (e) { console.error(e); }
+    try {
+      await fetch("/api/apify/keys", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: key.id, isActive: !key.isActive }),
+      });
+      fetchKeys();
+    } catch (e) { console.error(e); }
   };
 
-  // Group keys by account username (or fallback to key.name)
-  const accountMap = {};
-  for (const a of accounts) { accountMap[a.id] = a; }
-
-  // Build card list: one per key (with account info attached)
-  const keyCards = keys.map((k) => ({
-    key: k,
-    account: accountMap[k.id] || null,
-  }));
-
   // Summary stats
-  const totalRequests = accounts.reduce((s, a) => s + (a.usage?.totalRequests || 0), 0);
-  const totalCU = accounts.reduce((s, a) => s + (a.usage?.totalComputeUnits || 0), 0);
   const activeKeys = keys.filter((k) => k.isActive).length;
+  const accountList = Object.values(accounts);
+  const totalRemaining = accountList.reduce((s, a) => s + (a.balance?.remainingUsd || 0), 0);
+  const totalUsed = accountList.reduce((s, a) => s + (a.balance?.usedUsd || 0), 0);
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -294,36 +136,28 @@ export default function ApifyPage() {
             Multi-account proxy with round-robin key rotation
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          {lastUpdated && (
-            <span className="text-xs text-text-muted">
-              Updated {lastUpdated.toLocaleTimeString()}
-              {autoRefresh && ` • Next in ${countdown}s`}
-            </span>
-          )}
-          <Button onClick={() => setAddMode(!addMode)} icon={addMode ? "close" : "add"}>
-            {addMode ? "Cancel" : "Add Keys"}
-          </Button>
-        </div>
+        <Button onClick={() => setAddMode(!addMode)} icon={addMode ? "close" : "add"}>
+          {addMode ? "Cancel" : "Add Keys"}
+        </Button>
       </div>
 
-      {/* Summary bar (like quota page top stats) */}
+      {/* Summary bar */}
       <Card className="p-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div className="text-center">
-            <p className="text-2xl font-bold text-primary">{activeKeys}/{keys.length}</p>
-            <p className="text-xs text-text-muted mt-1">Keys</p>
+            <p className="text-2xl font-bold text-primary">{activeKeys}/{total}</p>
+            <p className="text-xs text-text-muted mt-1">Active Keys</p>
           </div>
           <div className="text-center">
-            <p className="text-2xl font-bold text-green-500">{totalRequests.toLocaleString()}</p>
-            <p className="text-xs text-text-muted mt-1">Total Requests</p>
+            <p className="text-2xl font-bold text-green-500">${totalRemaining.toFixed(2)}</p>
+            <p className="text-xs text-text-muted mt-1">Total Remaining</p>
           </div>
           <div className="text-center">
-            <p className="text-2xl font-bold text-amber-500">{totalCU.toLocaleString()}</p>
-            <p className="text-xs text-text-muted mt-1">Compute Units</p>
+            <p className="text-2xl font-bold text-amber-500">${totalUsed.toFixed(4)}</p>
+            <p className="text-xs text-text-muted mt-1">Total Used</p>
           </div>
           <div className="text-center">
-            <p className="text-2xl font-bold text-purple-500">{accounts.length}</p>
+            <p className="text-2xl font-bold text-purple-500">{accountList.length}</p>
             <p className="text-xs text-text-muted mt-1">Accounts</p>
           </div>
         </div>
@@ -342,7 +176,7 @@ export default function ApifyPage() {
           <input
             value={addName}
             onChange={(e) => setAddName(e.target.value)}
-            placeholder="Account name (optional)"
+            placeholder="Account name (optional, applied to all)"
             className="w-full px-3 py-2 rounded-lg border border-border bg-bg-input text-sm mb-2 focus:outline-none focus:border-primary"
           />
           <textarea
@@ -371,45 +205,180 @@ export default function ApifyPage() {
       {/* API Usage Info */}
       <Card className="p-4">
         <h3 className="font-semibold mb-2">API Usage</h3>
-        <p className="text-xs text-text-muted mb-2">
-          Replace <code>api.apify.com</code> with this base URL:
-        </p>
-        <div className="bg-bg-subtle rounded-lg p-3 font-mono text-xs">
-          <span className="text-primary">GET</span> /apify/v2/{"{actor_id}"}/run-sync-get-dataset-items
+        <div className="bg-bg-subtle rounded-lg p-3 font-mono text-xs space-y-1">
+          <div>
+            <span className="text-primary">GET</span> /apify/v2/{"{actor_id}"}/run-sync-get-dataset-items
+          </div>
+          <div>
+            <span className="text-green-500">BASE</span> https://api.moccilabs.com/apify/v2
+          </div>
         </div>
         <p className="text-xs text-text-muted mt-2">
-          All Apify v2 endpoints work 1:1. Keys are injected server-side.
+          All Apify v2 endpoints work 1:1. Keys are injected server-side via round-robin.
         </p>
       </Card>
 
-      {/* Account cards (ProviderLimitCard pattern) */}
-      {loading ? (
-        <Card className="p-8 text-center text-text-muted">Loading keys...</Card>
-      ) : keyCards.length === 0 ? (
-        <Card className="p-8 text-center text-text-muted">
-          No API keys configured. Click &quot;Add Keys&quot; to get started.
-        </Card>
-      ) : (
-        <div className="space-y-4">
-          {keyCards.map(({ key, account }) => (
-            <div key={key.id} className="flex flex-col gap-2">
-              <AccountCard
-                account={account ? { ...account, name: key.name, loading: false } : { name: key.name, loading: true }}
-                keys={[key]}
-                onRefresh={fetchAccounts}
-              />
-              <div className="flex items-center gap-2 px-1">
-                <Button size="sm" variant="ghost" onClick={() => handleToggle(key)}>
-                  {key.isActive ? "Disable" : "Enable"}
-                </Button>
-                <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-600" onClick={() => handleDelete(key)}>
-                  Delete
-                </Button>
-              </div>
-            </div>
-          ))}
+      {/* Keys DataTable */}
+      <Card className="p-4">
+        {/* Search bar */}
+        <div className="flex items-center gap-3 mb-4">
+          <div className="relative flex-1 max-w-sm">
+            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[18px]">
+              search
+            </span>
+            <input
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search by name or token..."
+              className="w-full pl-10 pr-3 py-2 rounded-lg border border-border bg-bg-input text-sm focus:outline-none focus:border-primary"
+            />
+          </div>
+          <span className="text-xs text-text-muted">{total} total</span>
         </div>
-      )}
+
+        {/* Table */}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Token</TableHead>
+              <TableHead>Plan</TableHead>
+              <TableHead className="text-right">Remaining</TableHead>
+              <TableHead className="text-right">Usage</TableHead>
+              <TableHead className="text-right">Requests</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center py-8 text-text-muted">
+                  Loading...
+                </TableCell>
+              </TableRow>
+            ) : keys.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center py-8 text-text-muted">
+                  No keys found. Click &quot;Add Keys&quot; to get started.
+                </TableCell>
+              </TableRow>
+            ) : (
+              keys.map((key) => {
+                const acct = accounts[key.id];
+                const remaining = acct?.balance?.remainingUsd;
+                const used = acct?.balance?.usedUsd;
+                const max = acct?.balance?.maxUsd;
+                const pct = max && max > 0 ? (used / max) * 100 : 0;
+
+                return (
+                  <TableRow key={key.id}>
+                    {/* Name */}
+                    <TableCell>
+                      <div>
+                        <p className="font-medium text-text-primary">{key.name || "Unnamed"}</p>
+                        {acct?.username && (
+                          <p className="text-xs text-text-muted">@{acct.username}</p>
+                        )}
+                      </div>
+                    </TableCell>
+
+                    {/* Token preview */}
+                    <TableCell>
+                      <code className="text-xs text-text-muted font-mono">{key.tokenPreview}</code>
+                    </TableCell>
+
+                    {/* Plan */}
+                    <TableCell>
+                      <Badge variant={acct?.plan === "free" ? "default" : "primary"} size="sm">
+                        {acct?.plan || "—"}
+                      </Badge>
+                    </TableCell>
+
+                    {/* Remaining balance */}
+                    <TableCell className="text-right">
+                      {remaining !== undefined ? (
+                        <span className={`font-bold ${remaining < 0.5 ? "text-red-500" : "text-green-500"}`}>
+                          ${remaining.toFixed(2)}
+                        </span>
+                      ) : (
+                        <span className="text-text-muted">—</span>
+                      )}
+                    </TableCell>
+
+                    {/* Usage bar */}
+                    <TableCell className="text-right">
+                      {used !== undefined && max !== undefined ? (
+                        <div className="flex flex-col items-end gap-1">
+                          <span className="text-xs text-text-muted">
+                            ${used.toFixed(4)} / ${max.toFixed(2)}
+                          </span>
+                          <div className="w-24 h-1.5 rounded-full bg-bg-subtle overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${pct < 50 ? "bg-green-500" : pct < 80 ? "bg-yellow-500" : "bg-red-500"}`}
+                              style={{ width: `${Math.min(pct, 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-text-muted">—</span>
+                      )}
+                    </TableCell>
+
+                    {/* Request count */}
+                    <TableCell className="text-right">
+                      <span className="text-sm text-text-muted">{key.usageCount || 0}</span>
+                    </TableCell>
+
+                    {/* Status */}
+                    <TableCell>
+                      <Badge variant={key.isActive ? "success" : "error"} size="sm">
+                        {key.isActive ? "Active" : "Disabled"}
+                      </Badge>
+                      {acct?.error && (
+                        <p className="text-xs text-red-500 mt-1 max-w-[120px] truncate" title={acct.error}>
+                          {acct.error}
+                        </p>
+                      )}
+                    </TableCell>
+
+                    {/* Actions */}
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleToggle(key)}
+                          className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                          title={key.isActive ? "Disable" : "Enable"}
+                        >
+                          <span className={`material-symbols-outlined text-[18px] ${key.isActive ? "text-green-500" : "text-text-muted"}`}>
+                            {key.isActive ? "toggle_on" : "toggle_off"}
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => handleDelete(key)}
+                          className="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+                          title="Delete"
+                        >
+                          <span className="material-symbols-outlined text-[18px] text-red-500">delete</span>
+                        </button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+
+        {/* Server-side pagination */}
+        <Pagination
+          currentPage={page}
+          pageSize={limit}
+          totalItems={total}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => { setLimit(size); setPage(1); }}
+        />
+      </Card>
     </div>
   );
 }
