@@ -209,7 +209,7 @@ function requiredPermission(pathname, method) {
   if (pathname.startsWith("/api/tags")) return null; // lightweight, allow authenticated
   if (pathname.startsWith("/api/audit-log")) return "users.manage";
   if (pathname.startsWith("/api/oauth")) return write ? "providers.manage" : null;
-  if (pathname.startsWith("/api/apify")) return write ? "providers.manage" : "providers.view";
+  if (pathname.startsWith("/api/apify")) return write ? "apify.manage" : "apify.view";
   return null; // unknown /api/* → just needs auth
 }
 
@@ -227,7 +227,7 @@ const DASHBOARD_PAGE_PERMS = {
   "/dashboard/users": "users.manage",
   "/dashboard/roles": "roles.manage",
   "/dashboard/proxy-pools": "providers.manage",
-  "/dashboard/apify": "providers.view",
+  "/dashboard/apify": "apify.view",
   "/dashboard/skills": "mcp.manage",
   "/dashboard/media-providers": "media.view",
   "/dashboard/console-log": "logs.view",

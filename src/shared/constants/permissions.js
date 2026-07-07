@@ -53,6 +53,8 @@ export const PERMISSION_CATALOG = [
       { key: "mitm.manage", label: "Manage MITM", desc: "MITM tooling" },
       { key: "translator.view", label: "Translator", desc: "Translator playground" },
       { key: "mcp.manage", label: "Manage MCP", desc: "MCP marketplace & config" },
+      { key: "apify.view", label: "View Apify", desc: "See Apify gateway keys & balance" },
+      { key: "apify.manage", label: "Manage Apify", desc: "Add/edit/delete Apify API keys" },
       { key: "chat.basic", label: "Basic chat", desc: "Use basic-chat playground" },
     ],
   },
