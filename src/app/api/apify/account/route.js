@@ -32,14 +32,29 @@ export async function GET() {
             };
           }
           const { data } = await res.json();
+
+          // Flatten plan object → string + extract limits
+          const planObj = data.plan || {};
+          const planId = (planObj.id || planObj.tier || "free").toLowerCase();
+
           return {
             id: key.id,
             name: key.name,
             username: data.username,
-            plan: data.plan,
+            email: data.email,
+            plan: planId,
+            planUsage: {
+              maxMonthlyUsageUsd: planObj.maxMonthlyUsageUsd || 0,
+              monthlyUsageCreditsUsd: planObj.monthlyUsageCreditsUsd || 0,
+              maxMonthlyActorComputeUnits: planObj.maxMonthlyActorComputeUnits || 0,
+              maxMonthlyResidentialProxyGbytes: planObj.maxMonthlyResidentialProxyGbytes || 0,
+              maxMonthlyProxySerps: planObj.maxMonthlyProxySerps || 0,
+              dataRetentionDays: planObj.dataRetentionDays || 0,
+              maxConcurrentActorRuns: planObj.maxConcurrentActorRuns || 0,
+            },
             usage: data.usage || {},
-            planUsage: data.planUsage || {},
             proxyUnlimited: data.proxyUnlimited || false,
+            profile: data.profile || {},
           };
         } catch (error) {
           return {

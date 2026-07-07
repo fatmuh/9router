@@ -41,7 +41,8 @@ function QuotaProgressBar({ label, used, total, percentage, unlimited, unit }) {
 // ── Provider Limit Card (same pattern as ProviderLimits) ──
 function AccountCard({ account, keys, onRefresh }) {
   const [refreshing, setRefreshing] = useState(false);
-  const plan = account?.plan || "free";
+  const planRaw = account?.plan?.id || account?.plan?.tier || (typeof account?.plan === "string" ? account.plan : "free");
+  const plan = (typeof planRaw === "string" ? planRaw : "free").toLowerCase();
   const planVariants = { free: "default", platform: "default", pro: "primary", enterprise: "info" };
 
   const handleRefresh = async () => {
