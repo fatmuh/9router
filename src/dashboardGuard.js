@@ -34,7 +34,7 @@ const PUBLIC_API_PATHS = [
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
-const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex"];
+const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/apify"];
 
 // Always require JWT session (sensitive operations)
 const ALWAYS_PROTECTED = [
@@ -65,6 +65,7 @@ const PROTECTED_API_PATHS = [
   "/api/mcp",
   "/api/translator",
   "/api/tunnel",
+  "/api/apify",
 ];
 
 // Routes that spawn child processes or read host secrets — restrict to localhost.

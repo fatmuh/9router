@@ -29,6 +29,13 @@ export {
   createProxyPool, updateProxyPool, deleteProxyPool,
 } from "./repos/proxyPoolsRepo.js";
 
+// Apify keys
+export {
+  getApifyKeys, getApifyKeyById, getActiveApifyKeys,
+  createApifyKey, updateApifyKey, deleteApifyKey,
+  touchApifyKey, markApifyKeyError,
+} from "./repos/apifyKeysRepo.js";
+
 // API keys
 export {
   getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey, touchApiKeyLastUsed, claimLegacyKeys, getQuotaStatus,

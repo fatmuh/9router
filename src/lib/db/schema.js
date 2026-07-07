@@ -192,6 +192,23 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
     ],
   },
+  apifyKeys: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      token: "TEXT UNIQUE NOT NULL",
+      name: "TEXT",
+      isActive: "INTEGER DEFAULT 1",
+      usageCount: "INTEGER DEFAULT 0",
+      lastUsedAt: "TEXT",
+      lastError: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ak_token ON apifyKeys(token)",
+      "CREATE INDEX IF NOT EXISTS idx_ak_active ON apifyKeys(isActive)",
+    ],
+  },
   auditLog: {
     columns: {
       id: "TEXT PRIMARY KEY",

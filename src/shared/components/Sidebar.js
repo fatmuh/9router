@@ -39,6 +39,7 @@ const systemItems = [
   { href: "/dashboard/roles", label: "Roles", icon: "shield", perm: "roles.manage" },
   { href: "/dashboard/audit-log", label: "Audit Log", icon: "history_edu", perm: "users.manage" },
   { href: "/dashboard/proxy-pools", label: "Proxy Pools", icon: "lan", perm: "providers.manage" },
+  { href: "/dashboard/apify", label: "Apify Gateway", icon: "cloud", perm: "providers.manage" },
   { href: "/dashboard/skills", label: "Skills", icon: "extension", perm: "mcp.manage" },
 ];
 
