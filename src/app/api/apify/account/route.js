@@ -37,14 +37,40 @@ export async function GET() {
           const planObj = data.plan || {};
           const planId = (planObj.id || planObj.tier || "free").toLowerCase();
 
+          // Fetch monthly usage to compute balance
+          let usedUsd = 0;
+          let usageCycle = null;
+          try {
+            const usageRes = await fetch("https://api.apify.com/v2/users/me/usage/monthly", {
+              headers: { Authorization: `Bearer ${key.token}` },
+              signal: AbortSignal.timeout(10000),
+            });
+            if (usageRes.ok) {
+              const { data: usageData } = await usageRes.json();
+              usageCycle = usageData?.usageCycle || null;
+              const daily = usageData?.dailyServiceUsages || [];
+              usedUsd = daily.reduce(
+                (sum, d) => sum + (Number(d.totalUsageCreditsUsd) || 0),
+                0
+              );
+            }
+          } catch {}
+
+          const maxUsd = planObj.maxMonthlyUsageUsd || 0;
+
           return {
             id: key.id,
             name: key.name,
             username: data.username,
             email: data.email,
             plan: planId,
-            planUsage: {
-              maxMonthlyUsageUsd: planObj.maxMonthlyUsageUsd || 0,
+            balance: {
+              maxUsd,
+              usedUsd,
+              remainingUsd: Math.max(0, maxUsd - usedUsd),
+            },
+            usageCycle,
+            planLimits: {
               monthlyUsageCreditsUsd: planObj.monthlyUsageCreditsUsd || 0,
               maxMonthlyActorComputeUnits: planObj.maxMonthlyActorComputeUnits || 0,
               maxMonthlyResidentialProxyGbytes: planObj.maxMonthlyResidentialProxyGbytes || 0,
@@ -52,7 +78,6 @@ export async function GET() {
               dataRetentionDays: planObj.dataRetentionDays || 0,
               maxConcurrentActorRuns: planObj.maxConcurrentActorRuns || 0,
             },
-            usage: data.usage || {},
             proxyUnlimited: data.proxyUnlimited || false,
             profile: data.profile || {},
           };

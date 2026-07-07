@@ -51,71 +51,16 @@ function AccountCard({ account, keys, onRefresh }) {
     try { await onRefresh(); } finally { setRefreshing(false); }
   };
 
-  // Compute quotas from account data
+  // Compute quotas from balance + planLimits
   const quotas = [];
-  if (account?.usage) {
-    const u = account.usage;
-    const p = account.planUsage || {};
-
-    // Requests
-    if (u.totalRequests !== undefined) {
-      quotas.push({
-        label: "Total Requests",
-        used: u.totalRequests,
-        total: p.totalRequests || u.totalRequests || 0,
-        unit: "requests",
-      });
-    }
-
-    // Compute Units
-    if (u.totalComputeUnits !== undefined) {
-      quotas.push({
-        label: "Compute Units",
-        used: u.totalComputeUnits,
-        total: p.totalComputeUnits || 0,
-        unit: "CU",
-      });
-    }
-
-    // Proxy Requests
-    if (u.totalProxyRequests !== undefined) {
-      quotas.push({
-        label: "Proxy Requests",
-        used: u.totalProxyRequests,
-        total: p.totalProxyRequests || 0,
-        unit: "requests",
-      });
-    }
-
-    // Data Transfer
-    if (u.totalDataTransferBytes !== undefined) {
-      quotas.push({
-        label: "Data Transfer",
-        used: u.totalDataTransferBytes,
-        total: p.totalDataTransferBytes || 0,
-        unit: "bytes",
-      });
-    }
-
-    // Actor Compute Units
-    if (u.totalComputeUnitsSecs !== undefined) {
-      quotas.push({
-        label: "Actor Compute",
-        used: u.totalComputeUnitsSecs,
-        total: p.totalComputeUnitsSecs || 0,
-        unit: "CU·s",
-      });
-    }
-
-    // Storage
-    if (u.totalStorageBytes !== undefined) {
-      quotas.push({
-        label: "Storage",
-        used: u.totalStorageBytes,
-        total: p.totalStorageBytes || 0,
-        unit: "bytes",
-      });
-    }
+  if (account?.balance) {
+    const b = account.balance;
+    quotas.push({
+      label: "Monthly Usage ($)",
+      used: b.usedUsd,
+      total: b.maxUsd,
+      unit: "USD",
+    });
   }
 
   return (
@@ -143,6 +88,18 @@ function AccountCard({ account, keys, onRefresh }) {
             </div>
           </div>
         </div>
+        {/* Balance badge */}
+        {account?.balance && (
+          <div className="text-right shrink-0">
+            <p className="text-xs text-text-muted">Remaining</p>
+            <p className={`text-lg font-bold ${account.balance.remainingUsd < 0.5 ? "text-red-500" : "text-green-500"}`}>
+              ${account.balance.remainingUsd.toFixed(2)}
+            </p>
+            <p className="text-[10px] text-text-muted">
+              ${account.balance.usedUsd.toFixed(4)} / ${account.balance.maxUsd.toFixed(2)}
+            </p>
+          </div>
+        )}
         <button
           onClick={handleRefresh}
           disabled={refreshing}
