@@ -5,6 +5,7 @@ import { Card, Button, Badge } from "@/shared/components";
 
 export default function ApifyPage() {
   const [keys, setKeys] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [addMode, setAddMode] = useState(false);
   const [bulkText, setBulkText] = useState("");
@@ -25,6 +26,18 @@ export default function ApifyPage() {
   }, []);
 
   useEffect(() => { fetchKeys(); }, [fetchKeys]);
+
+  const fetchAccounts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/apify/account");
+      const data = await res.json();
+      setAccounts(data.accounts || []);
+    } catch (error) {
+      console.error("Failed to fetch accounts:", error);
+    }
+  }, []);
+
+  useEffect(() => { if (keys.length > 0) fetchAccounts(); }, [keys, fetchAccounts]);
 
   const handleAdd = async () => {
     const lines = bulkText.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -75,6 +88,16 @@ export default function ApifyPage() {
   const activeCount = keys.filter((k) => k.isActive).length;
   const totalUsage = keys.reduce((sum, k) => sum + (k.usageCount || 0), 0);
 
+  // Account info map (key.id → account data)
+  const accountMap = {};
+  for (const a of accounts) { accountMap[a.id] = a; }
+
+  // Aggregate stats
+  const totalRequests = accounts.reduce((sum, a) => sum + (a.usage?.totalRequests || 0), 0);
+  const totalCU = accounts.reduce((sum, a) => sum + (a.usage?.totalComputeUnits || 0), 0);
+  const freeAccounts = accounts.filter((a) => a.plan === "free" || a.plan === "platform").length;
+  const paidAccounts = accounts.filter((a) => a.plan && a.plan !== "free" && a.plan !== "platform").length;
+
   return (
     <div className="space-y-6 max-w-4xl">
       {/* Header */}
@@ -91,18 +114,22 @@ export default function ApifyPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-4">
-        <Card className="p-4 text-center">
-          <p className="text-3xl font-bold text-primary">{keys.length}</p>
-          <p className="text-xs text-text-muted mt-1">Total Keys</p>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card className="p-3 text-center">
+          <p className="text-2xl font-bold text-primary">{activeCount}/{keys.length}</p>
+          <p className="text-xs text-text-muted mt-1">Keys Active</p>
         </Card>
-        <Card className="p-4 text-center">
-          <p className="text-3xl font-bold text-green-500">{activeCount}</p>
-          <p className="text-xs text-text-muted mt-1">Active</p>
-        </Card>
-        <Card className="p-4 text-center">
-          <p className="text-3xl font-bold text-amber-500">{totalUsage}</p>
+        <Card className="p-3 text-center">
+          <p className="text-2xl font-bold text-green-500">{totalRequests.toLocaleString()}</p>
           <p className="text-xs text-text-muted mt-1">Total Requests</p>
+        </Card>
+        <Card className="p-3 text-center">
+          <p className="text-2xl font-bold text-amber-500">{totalCU.toLocaleString()}</p>
+          <p className="text-xs text-text-muted mt-1">Compute Units</p>
+        </Card>
+        <Card className="p-3 text-center">
+          <p className="text-2xl font-bold text-purple-500">{freeAccounts} free{paidAccounts > 0 ? ` / ${paidAccounts} paid` : ""}</p>
+          <p className="text-xs text-text-muted mt-1">Plan Types</p>
         </Card>
       </div>
 
@@ -187,8 +214,33 @@ export default function ApifyPage() {
                   </div>
                   <div className="flex items-center gap-3 mt-1 text-xs text-text-muted">
                     <code className="font-mono">{key.tokenPreview}</code>
-                    <span>•</span>
-                    <span>{key.usageCount || 0} requests</span>
+                    {accountMap[key.id]?.username && (
+                      <>
+                        <span>•</span>
+                        <span>@{accountMap[key.id].username}</span>
+                      </>
+                    )}
+                    {accountMap[key.id]?.plan && (
+                      <>
+                        <span>•</span>
+                        <Badge variant={accountMap[key.id].plan === "free" ? "info" : "success"} className="text-[9px]">
+                          {accountMap[key.id].plan}
+                        </Badge>
+                      </>
+                    )}
+                    {accountMap[key.id]?.usage ? (
+                      <>
+                        <span>•</span>
+                        <span>{(accountMap[key.id].usage.totalRequests || 0).toLocaleString()} req</span>
+                        <span>•</span>
+                        <span>{(accountMap[key.id].usage.totalComputeUnits || 0).toLocaleString()} CU</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>•</span>
+                        <span>{key.usageCount || 0} local req</span>
+                      </>
+                    )}
                     {key.lastUsedAt && (
                       <>
                         <span>•</span>
