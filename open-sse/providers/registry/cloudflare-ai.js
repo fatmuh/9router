@@ -19,6 +19,7 @@ export default {
     },
   },
   category: "freeTier",
+  authModes: ["apikey"],
   hasProviderSpecificData: true,
   transport: {
     baseUrl: "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions",
