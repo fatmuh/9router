@@ -1738,7 +1738,7 @@ export default function ProviderDetailPage() {
         providerId={providerId}
         providerName={providerInfo?.name || providerId}
         canBulkAdd={supportsApiKeyAuth || isCompatible}
-        authType={isCompatible ? "apikey" : "apikey"}
+        authType="apikey"
         onImported={fetchConnections}
       />
 
