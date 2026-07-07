@@ -133,11 +133,11 @@ function AccountCard({ account, keys, onRefresh }) {
               {account?.username && (
                 <span className="text-xs text-text-muted">@{account.username}</span>
               )}
-              <Badge variant={planVariants[plan] || "default"} size="xs">
+              <Badge variant={planVariants[plan] || "default"} size="sm">
                 {plan}
               </Badge>
               {account?.proxyUnlimited && (
-                <Badge variant="success" size="xs">Unlimited Proxy</Badge>
+                <Badge variant="success" size="sm">Unlimited Proxy</Badge>
               )}
             </div>
           </div>
