@@ -65,7 +65,11 @@ export async function proxyToApify(apifyPath, options = {}, retryCount = 0) {
     }
 
     // Forward response with CORS headers
+    // Remove content-encoding & content-length: Node fetch already decompressed the body,
+    // forwarding these headers causes "Decompression failed" in clients like n8n.
     const headers = new Headers(upstreamRes.headers);
+    headers.delete("content-encoding");
+    headers.delete("content-length");
     headers.set("X-Apify-Key-Used", key.name || key.id.substring(0, 8));
     headers.set("Access-Control-Allow-Origin", "*");
 
