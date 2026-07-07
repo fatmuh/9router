@@ -34,7 +34,7 @@ export async function proxyToApify(apifyPath, options = {}, retryCount = 0) {
   const MAX_RETRIES = 3;
   const key = await selectKey();
 
-  const url = new URL(`${APIFY_BASE}/v2/${apifyPath}`);
+  const url = new URL(`${APIFY_BASE}/${apifyPath}`);
   if (options.searchParams) {
     for (const [k, v] of Object.entries(options.searchParams)) {
       if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
