@@ -46,10 +46,118 @@ export default {
 };
 `;
 
+async function deploySingleWorker(accountId, apiToken, projectName) {
+  // 1. Upload Worker Script
+  const workerScriptUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${projectName}`;
+
+  const formData = new FormData();
+  formData.append("index.js", new Blob([RELAY_WORKER_CODE], { type: "application/javascript+module" }), "index.js");
+  formData.append("metadata", new Blob([JSON.stringify({
+    main_module: "index.js",
+    compatibility_date: "2024-03-20",
+    observability: { enabled: true }
+  })], { type: "application/json" }), "metadata.json");
+
+  const uploadRes = await fetch(workerScriptUrl, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+    },
+    body: formData,
+  });
+
+  if (!uploadRes.ok) {
+    const err = await uploadRes.json().catch(() => ({}));
+    return { error: err.errors?.[0]?.message || `Failed to upload Worker (${uploadRes.status})` };
+  }
+
+  // 2. Enable workers.dev subdomain for the script
+  await fetch(`${workerScriptUrl}/subdomain`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ enabled: true }),
+  }).catch(() => {});
+
+  // 3. Get the workers.dev subdomain for the account
+  let deployUrl = "";
+  const subdomainRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`, {
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (subdomainRes.ok) {
+    const subdomainData = await subdomainRes.json();
+    if (subdomainData.result?.subdomain) {
+      deployUrl = `https://${projectName}.${subdomainData.result.subdomain}.workers.dev`;
+    }
+  }
+
+  if (!deployUrl) {
+    return { error: "Worker uploaded but failed to retrieve workers.dev subdomain." };
+  }
+
+  return { deployUrl };
+}
+
 // POST /api/proxy-pools/cloudflare-deploy
+// Single:   { accountId, apiToken, projectName }
+// Bulk:     { bulk: true, items: [{ accountId, apiToken, projectName? }, ...] }
 export async function POST(request) {
   try {
     const body = await request.json();
+
+    // ===== BULK MODE =====
+    if (body.bulk === true && Array.isArray(body.items)) {
+      const stamp = Date.now().toString(36);
+      let created = 0;
+      let failed = 0;
+      const results = [];
+
+      for (let i = 0; i < body.items.length; i++) {
+        const item = body.items[i];
+        const accountId = item.accountId?.trim();
+        const apiToken = item.apiToken?.trim();
+        const projectName = (item.projectName?.trim() || `relay-${stamp}-${i + 1}`);
+
+        if (!accountId || !apiToken) {
+          failed++;
+          results.push({ index: i + 1, error: "Missing accountId or apiToken" });
+          continue;
+        }
+
+        const deploy = await deploySingleWorker(accountId, apiToken, projectName);
+        if (deploy.error) {
+          failed++;
+          results.push({ index: i + 1, projectName, error: deploy.error });
+          continue;
+        }
+
+        try {
+          const pool = await createProxyPool({
+            name: projectName,
+            proxyUrl: deploy.deployUrl,
+            type: "cloudflare",
+            noProxy: "",
+            isActive: true,
+            strictProxy: false,
+          });
+          created++;
+          results.push({ index: i + 1, projectName, deployUrl: deploy.deployUrl, poolId: pool.id });
+        } catch (e) {
+          failed++;
+          results.push({ index: i + 1, projectName, error: e.message });
+        }
+      }
+
+      return NextResponse.json({ created, failed, results }, { status: 201 });
+    }
+
+    // ===== SINGLE MODE (original) =====
     const accountId = body.accountId?.trim();
     const apiToken = body.apiToken?.trim();
     const projectName = body.projectName?.trim() || `relay-${Date.now().toString(36)}`;
@@ -58,86 +166,21 @@ export async function POST(request) {
       return NextResponse.json({ error: "Cloudflare Account ID and API Token are required" }, { status: 400 });
     }
 
-    // 1. Upload Worker Script
-    const workerScriptUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${projectName}`;
-    
-    // Cloudflare requires multipart/form-data for worker script upload
-    const formData = new FormData();
-    formData.append("index.js", new Blob([RELAY_WORKER_CODE], { type: "application/javascript+module" }), "index.js");
-    formData.append("metadata", new Blob([JSON.stringify({
-      main_module: "index.js",
-      compatibility_date: "2024-03-20",
-      observability: { enabled: true }
-    })], { type: "application/json" }), "metadata.json");
-
-    const uploadRes = await fetch(workerScriptUrl, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-      },
-      body: formData,
-    });
-
-    if (!uploadRes.ok) {
-      const err = await uploadRes.json().catch(() => ({}));
-      console.error("Cloudflare upload error:", err);
-      return NextResponse.json(
-        { error: err.errors?.[0]?.message || "Failed to upload Worker to Cloudflare" },
-        { status: uploadRes.status }
-      );
+    const deploy = await deploySingleWorker(accountId, apiToken, projectName);
+    if (deploy.error) {
+      return NextResponse.json({ error: deploy.error }, { status: 400 });
     }
 
-    // 2. Enable workers.dev subdomain for the script
-    const enableSubdomainRes = await fetch(`${workerScriptUrl}/subdomain`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ enabled: true }),
-    });
-
-    if (!enableSubdomainRes.ok) {
-      const err = await enableSubdomainRes.json().catch(() => ({}));
-      console.error("Cloudflare subdomain enable error:", err);
-      // We don't fail completely here, just continue
-    }
-
-    // 3. Get the workers.dev subdomain for the account to construct the final URL
-    let deployUrl = "";
-    const subdomainRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (subdomainRes.ok) {
-      const subdomainData = await subdomainRes.json();
-      if (subdomainData.result && subdomainData.result.subdomain) {
-        deployUrl = `https://${projectName}.${subdomainData.result.subdomain}.workers.dev`;
-      }
-    }
-
-    if (!deployUrl) {
-       return NextResponse.json(
-        { error: "Worker deployed but failed to retrieve workers.dev subdomain. Make sure you have setup a workers.dev subdomain in Cloudflare Dashboard." },
-        { status: 400 }
-      );
-    }
-
-    // Create proxy pool entry with type cloudflare
     const proxyPool = await createProxyPool({
       name: projectName,
-      proxyUrl: deployUrl,
+      proxyUrl: deploy.deployUrl,
       type: "cloudflare",
       noProxy: "",
       isActive: true,
       strictProxy: false,
     });
 
-    return NextResponse.json({ proxyPool, deployUrl }, { status: 201 });
+    return NextResponse.json({ proxyPool, deployUrl: deploy.deployUrl }, { status: 201 });
   } catch (error) {
     console.log("Error deploying Cloudflare relay:", error);
     return NextResponse.json({ error: error.message || "Deploy failed" }, { status: 500 });

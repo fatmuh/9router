@@ -41,6 +41,8 @@ export default function ProxyPoolsPage() {
   const [batchImportText, setBatchImportText] = useState("");
   const [vercelForm, setVercelForm] = useState({ vercelToken: "", projectName: "vercel-relay" });
   const [cloudflareForm, setCloudflareForm] = useState({ accountId: "", apiToken: "", projectName: "cloudflare-relay" });
+  const [cfDeployMode, setCfDeployMode] = useState("single"); // "single" | "bulk"
+  const [cfBulkText, setCfBulkText] = useState("");
   const [denoForm, setDenoForm] = useState({ denoToken: "", orgDomain: "", projectName: "" });
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -398,6 +400,9 @@ export default function ProxyPoolsPage() {
   };
 
   const handleCloudflareDeploy = async () => {
+    if (cfDeployMode === "bulk") {
+      return handleCloudflareBulkDeploy();
+    }
     if (!cloudflareForm.accountId.trim() || !cloudflareForm.apiToken.trim()) return;
     setDeploying(true);
     try {
@@ -417,6 +422,62 @@ export default function ProxyPoolsPage() {
     } catch (error) {
       console.log("Error deploying Cloudflare relay:", error);
       notify.error("Deploy failed");
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  const handleCloudflareBulkDeploy = async () => {
+    const lines = cfBulkText
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) {
+      notify.warning("Paste at least one line.");
+      return;
+    }
+
+    // Parse each line as apiToken|accountId (worker name auto-generated)
+    const items = [];
+    const parseErrors = [];
+    lines.forEach((line, i) => {
+      const parts = line.split("|").map((s) => (s || "").trim());
+      if (parts.length < 2 || !parts[0] || !parts[1]) {
+        parseErrors.push(`Line ${i + 1}: invalid format (need apiToken|accountId)`);
+        return;
+      }
+      items.push({
+        apiToken: parts[0],
+        accountId: parts[1],
+        projectName: parts[2] || undefined, // optional custom name
+      });
+    });
+
+    if (parseErrors.length > 0) {
+      notify.error(`Format errors:\n${parseErrors.join("\n")}`);
+      return;
+    }
+
+    setDeploying(true);
+    try {
+      const res = await fetch("/api/proxy-pools/cloudflare-deploy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bulk: true, items }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await fetchProxyPools();
+        closeCloudflareModal();
+        const failMsg = data.failed > 0 ? `, ${data.failed} failed` : "";
+        notify.success(`Bulk deploy: ${data.created} deployed${failMsg}`);
+      } else {
+        notify.error(data.error || "Bulk deploy failed");
+      }
+    } catch (error) {
+      console.log("Error bulk deploying Cloudflare relays:", error);
+      notify.error("Bulk deploy failed");
     } finally {
       setDeploying(false);
     }
@@ -883,35 +944,71 @@ export default function ProxyPoolsPage() {
               </ol>
             </div>
           </div>
-          <Input
-            label="Account ID"
-            value={cloudflareForm.accountId}
-            onChange={(e) => setCloudflareForm((prev) => ({ ...prev, accountId: e.target.value }))}
-            placeholder="your-cloudflare-account-id"
-            hint={<>Found on the right side of the Cloudflare dashboard overview page.</>}
-          />
-          <Input
-            label="API Token"
-            value={cloudflareForm.apiToken}
-            onChange={(e) => setCloudflareForm((prev) => ({ ...prev, apiToken: e.target.value }))}
-            placeholder="your-cloudflare-api-token"
-            hint={<>Requires "Workers Scripts: Edit" permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
-            type="password"
-          />
-          <Input
-            label="Worker Name"
-            value={cloudflareForm.projectName}
-            onChange={(e) => setCloudflareForm((prev) => ({ ...prev, projectName: e.target.value }))}
-            placeholder="my-relay"
-            hint="Unique name for your Cloudflare Worker. Leave empty for auto-generated name."
-          />
+
+          {/* Single / Bulk tabs */}
+          <div className="flex gap-2">
+            <Button size="sm" variant={cfDeployMode === "single" ? "primary" : "ghost"} onClick={() => setCfDeployMode("single")}>
+              Single Deploy
+            </Button>
+            <Button size="sm" variant={cfDeployMode === "bulk" ? "primary" : "ghost"} onClick={() => setCfDeployMode("bulk")}>
+              Bulk Deploy
+            </Button>
+          </div>
+
+          {cfDeployMode === "single" ? (
+            <>
+              <Input
+                label="Account ID"
+                value={cloudflareForm.accountId}
+                onChange={(e) => setCloudflareForm((prev) => ({ ...prev, accountId: e.target.value }))}
+                placeholder="your-cloudflare-account-id"
+                hint={<>Found on the right side of the Cloudflare dashboard overview page.</>}
+              />
+              <Input
+                label="API Token"
+                value={cloudflareForm.apiToken}
+                onChange={(e) => setCloudflareForm((prev) => ({ ...prev, apiToken: e.target.value }))}
+                placeholder="your-cloudflare-api-token"
+                hint={<>Requires "Workers Scripts: Edit" permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
+                type="password"
+              />
+              <Input
+                label="Worker Name"
+                value={cloudflareForm.projectName}
+                onChange={(e) => setCloudflareForm((prev) => ({ ...prev, projectName: e.target.value }))}
+                placeholder="my-relay"
+                hint="Unique name for your Cloudflare Worker. Leave empty for auto-generated name."
+              />
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="text-sm font-medium text-text-main mb-1 block">Credentials (one per line)</label>
+                <textarea
+                  value={cfBulkText}
+                  onChange={(e) => setCfBulkText(e.target.value)}
+                  placeholder={"apiToken|accountId\napiToken|accountId|optional-worker-name"}
+                  className="w-full min-h-[160px] py-2 px-3 text-sm text-text-main bg-white dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none transition-all font-mono"
+                />
+                <p className="text-xs text-text-muted mt-1">
+                  Format: <code className="bg-bg-subtle px-1 rounded">apiToken|accountId</code> — worker name auto-generated.
+                  Optional 3rd field for custom name.
+                </p>
+              </div>
+            </>
+          )}
+
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button
               fullWidth
               onClick={handleCloudflareDeploy}
-              disabled={!cloudflareForm.accountId.trim() || !cloudflareForm.apiToken.trim() || deploying}
+              disabled={deploying || (cfDeployMode === "single"
+                ? (!cloudflareForm.accountId.trim() || !cloudflareForm.apiToken.trim())
+                : !cfBulkText.trim())}
             >
-              {deploying ? "Deploying..." : "Deploy Worker"}
+              {deploying
+                ? (cfDeployMode === "bulk" ? "Deploying..." : "Deploying...")
+                : (cfDeployMode === "bulk" ? "Bulk Deploy" : "Deploy Worker")}
             </Button>
             <Button fullWidth variant="ghost" onClick={closeCloudflareModal} disabled={deploying}>
               Cancel
