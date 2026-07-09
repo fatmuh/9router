@@ -49,6 +49,10 @@ export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_M
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 10 * 1000);
 
+// Proxy/relay connect timeout: extra headroom when routing through relay workers (CF/Vercel/Deno).
+// The extra hop + upstream prefill needs more time before response headers arrive.
+export const PROXY_CONNECT_TIMEOUT_MS = envMs("PROXY_CONNECT_TIMEOUT_MS", 60 * 1000);
+
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
 
