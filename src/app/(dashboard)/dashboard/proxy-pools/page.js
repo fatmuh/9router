@@ -35,7 +35,6 @@ export default function ProxyPoolsPage() {
   const [showVercelModal, setShowVercelModal] = useState(false);
   const [showCloudflareModal, setShowCloudflareModal] = useState(false);
   const [showDenoModal, setShowDenoModal] = useState(false);
-  const [showCfImportModal, setShowCfImportModal] = useState(false);
   const [showRelayMenu, setShowRelayMenu] = useState(false);
   const [editingProxyPool, setEditingProxyPool] = useState(null);
   const [formData, setFormData] = useState(normalizeFormData());
@@ -43,11 +42,6 @@ export default function ProxyPoolsPage() {
   const [vercelForm, setVercelForm] = useState({ vercelToken: "", projectName: "vercel-relay" });
   const [cloudflareForm, setCloudflareForm] = useState({ accountId: "", apiToken: "", projectName: "cloudflare-relay" });
   const [denoForm, setDenoForm] = useState({ denoToken: "", orgDomain: "", projectName: "" });
-  const [cfImportForm, setCfImportForm] = useState({ accountId: "", apiToken: "" });
-  const [cfImportWorkers, setCfImportWorkers] = useState([]);
-  const [cfImportSelected, setCfImportSelected] = useState(new Set());
-  const [cfImportScanning, setCfImportScanning] = useState(false);
-  const [cfImportSubdomain, setCfImportSubdomain] = useState("");
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const [deploying, setDeploying] = useState(false);
@@ -378,85 +372,6 @@ export default function ProxyPoolsPage() {
     setShowDenoModal(false);
   };
 
-  const openCfImportModal = () => {
-    setCfImportForm({ accountId: "", apiToken: "" });
-    setCfImportWorkers([]);
-    setCfImportSelected(new Set());
-    setCfImportSubdomain("");
-    setShowCfImportModal(true);
-  };
-
-  const closeCfImportModal = () => {
-    if (cfImportScanning || importing) return;
-    setShowCfImportModal(false);
-  };
-
-  const handleCfScan = async () => {
-    const { accountId, apiToken } = cfImportForm;
-    if (!accountId.trim() || !apiToken.trim()) return;
-    setCfImportScanning(true);
-    try {
-      const params = new URLSearchParams({ accountId: accountId.trim(), apiToken: apiToken.trim() });
-      const res = await fetch(`/api/proxy-pools/cloudflare-import?${params}`);
-      const data = await res.json();
-      if (res.ok) {
-        const workers = data.workers || [];
-        setCfImportWorkers(workers);
-        setCfImportSubdomain(data.subdomain || "");
-        // Pre-select all workers
-        setCfImportSelected(new Set(workers.map((w) => w.name)));
-        if (workers.length === 0) {
-          notify.warning("No workers found on this Cloudflare account.");
-        } else {
-          notify.success(`Found ${workers.length} worker(s)`);
-        }
-      } else {
-        notify.error(data.error || "Failed to scan Cloudflare account");
-      }
-    } catch (error) {
-      console.log("Error scanning CF workers:", error);
-      notify.error("Failed to scan Cloudflare account");
-    } finally {
-      setCfImportScanning(false);
-    }
-  };
-
-  const handleCfImport = async () => {
-    const { accountId, apiToken } = cfImportForm;
-    if (!accountId.trim() || !apiToken.trim()) return;
-    const selectedNames = [...cfImportSelected];
-    if (selectedNames.length === 0) {
-      notify.warning("Select at least one worker to import.");
-      return;
-    }
-
-    setImporting(true);
-    try {
-      const res = await fetch("/api/proxy-pools/cloudflare-import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accountId: accountId.trim(),
-          apiToken: apiToken.trim(),
-          names: selectedNames.join(","),
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        await fetchProxyPools();
-        closeCfImportModal();
-        notify.success(`Imported ${data.created}${data.skipped ? `, skipped ${data.skipped}` : ""}${data.failed ? `, failed ${data.failed}` : ""}`);
-      } else {
-        notify.error(data.error || "Import failed");
-      }
-    } catch (error) {
-      console.log("Error importing CF workers:", error);
-      notify.error("Import failed");
-    } finally {
-      setImporting(false);
-    }
-  };
-
   const handleVercelDeploy = async () => {
     if (!vercelForm.vercelToken.trim()) return;
     setDeploying(true);
@@ -688,17 +603,7 @@ export default function ProxyPoolsPage() {
                   className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-text-main transition-colors hover:bg-black/5 dark:hover:bg-white/5"
                 >
                   <span className="material-symbols-outlined text-[20px] text-orange-500">cloud</span>
-                  Deploy CF Relay
-                </button>
-                <button
-                  onClick={() => {
-                    openCfImportModal();
-                    setShowRelayMenu(false);
-                  }}
-                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-text-main transition-colors hover:bg-black/5 dark:hover:bg-white/5"
-                >
-                  <span className="material-symbols-outlined text-[20px] text-orange-500">download</span>
-                  Import CF Workers
+                  Cloudflare Relay
                 </button>
                 <button
                   onClick={() => {
@@ -1009,135 +914,6 @@ export default function ProxyPoolsPage() {
               {deploying ? "Deploying..." : "Deploy Worker"}
             </Button>
             <Button fullWidth variant="ghost" onClick={closeCloudflareModal} disabled={deploying}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* Cloudflare Import Modal */}
-      <Modal
-        isOpen={showCfImportModal}
-        title="Import Cloudflare Workers"
-        onClose={closeCfImportModal}
-      >
-        <div className="flex flex-col gap-4">
-          <div className="rounded-lg bg-orange-500/5 border border-orange-500/10 p-3 flex flex-col gap-1.5">
-            <p className="text-sm text-text-main font-medium">Import Existing Workers</p>
-            <p className="text-xs text-text-muted">
-              Scan your Cloudflare account for existing Workers and import them as proxy pool entries.
-              Works with any workers.dev-deployed Worker.
-            </p>
-            <ul className="text-xs text-text-muted list-disc pl-4 space-y-0.5">
-              <li>Bulk import — all workers discovered on the account</li>
-              <li>Existing proxy pools (same URL) are automatically skipped</li>
-              <li>Requires a token with <b>Workers Scripts: Read</b> permission</li>
-            </ul>
-          </div>
-
-          <Input
-            label="Account ID"
-            value={cfImportForm.accountId}
-            onChange={(e) => setCfImportForm((prev) => ({ ...prev, accountId: e.target.value }))}
-            placeholder="bacbc889b32035b8674f33ae468875abb"
-            hint="Found on the right side of the Cloudflare dashboard overview page."
-          />
-          <Input
-            label="API Token"
-            value={cfImportForm.apiToken}
-            onChange={(e) => setCfImportForm((prev) => ({ ...prev, apiToken: e.target.value }))}
-            placeholder="your-cloudflare-api-token"
-            hint={<>Requires "Workers Scripts: Read" permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
-            type="password"
-          />
-
-          <Button
-            fullWidth
-            variant="secondary"
-            icon={cfImportScanning ? "progress_activity" : "search"}
-            onClick={handleCfScan}
-            disabled={!cfImportForm.accountId.trim() || !cfImportForm.apiToken.trim() || cfImportScanning || importing}
-          >
-            {cfImportScanning ? "Scanning..." : "Scan Workers"}
-          </Button>
-
-          {/* Worker list */}
-          {cfImportWorkers.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-text-main">
-                  {cfImportWorkers.length} worker(s) found
-                  {cfImportSubdomain && <span className="text-text-muted font-normal ml-1">({cfImportSubdomain}.workers.dev)</span>}
-                </p>
-                <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={cfImportSelected.size === cfImportWorkers.length}
-                    onChange={() => {
-                      if (cfImportSelected.size === cfImportWorkers.length) {
-                        setCfImportSelected(new Set());
-                      } else {
-                        setCfImportSelected(new Set(cfImportWorkers.map((w) => w.name)));
-                      }
-                    }}
-                    className="size-3.5 rounded border-black/20 dark:border-white/20"
-                  />
-                  Select all
-                </label>
-              </div>
-
-              <div className="max-h-48 overflow-y-auto rounded-lg border border-black/10 dark:border-white/10 divide-y divide-black/[0.04] dark:divide-white/[0.05]">
-                {cfImportWorkers.map((worker) => {
-                  const isDuplicate = proxyPools.some(
-                    (p) => (p.proxyUrl || "").trim() === worker.url
-                  );
-                  return (
-                    <label
-                      key={worker.name}
-                      className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-black/[0.02] dark:hover:bg-white/[0.02] ${isDuplicate ? "opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={cfImportSelected.has(worker.name)}
-                        disabled={isDuplicate}
-                        onChange={() => {
-                          setCfImportSelected((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(worker.name)) {
-                              next.delete(worker.name);
-                            } else {
-                              next.add(worker.name);
-                            }
-                            return next;
-                          });
-                        }}
-                        className="size-3.5 shrink-0 rounded border-black/20 dark:border-white/20"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-text-main truncate">{worker.name}</p>
-                        <p className="text-xs text-text-muted truncate">{worker.url || "no URL"}</p>
-                      </div>
-                      {isDuplicate && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 text-text-muted shrink-0">exists</span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Button
-              fullWidth
-              onClick={handleCfImport}
-              disabled={cfImportWorkers.length === 0 || cfImportSelected.size === 0 || cfImportScanning || importing}
-            >
-              {importing
-                ? "Importing..."
-                : `Import ${cfImportSelected.size} Worker${cfImportSelected.size !== 1 ? "s" : ""}`}
-            </Button>
-            <Button fullWidth variant="ghost" onClick={closeCfImportModal} disabled={cfImportScanning || importing}>
               Cancel
             </Button>
           </div>
