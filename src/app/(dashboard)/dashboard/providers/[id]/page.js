@@ -768,6 +768,28 @@ export default function ProviderDetailPage() {
     }
   };
 
+  const [bulkToggling, setBulkToggling] = useState(false);
+  const handleBulkToggleActive = async (isActive) => {
+    const count = selectedConnectionIds.length;
+    if (count === 0) return;
+    setBulkToggling(true);
+    try {
+      const ids = [...selectedConnectionIds];
+      await Promise.all(ids.map(async (id) => {
+        try {
+          await fetch(`/api/providers/${id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ isActive }),
+          });
+        } catch {}
+      }));
+      setConnections(prev => prev.map(c => ids.includes(c.id) ? { ...c, isActive } : c));
+    } finally {
+      setBulkToggling(false);
+    }
+  };
+
   const handleSwapPriority = async (index1, index2) => {
     // Optimistic update state
     const newConnections = [...connections];
@@ -1391,14 +1413,34 @@ export default function ProviderDetailPage() {
               {connections.length > 0 && (
                 <>
                   {selectedConnectionIds.length > 0 && (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      icon="delete"
-                      onClick={handleBulkDelete}
-                    >
-                      Delete Selected ({selectedConnectionIds.length})
-                    </Button>
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={bulkToggling ? "progress_activity" : "toggle_on"}
+                        onClick={() => handleBulkToggleActive(true)}
+                        disabled={bulkToggling}
+                      >
+                        Enable ({selectedConnectionIds.length})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={bulkToggling ? "progress_activity" : "toggle_off"}
+                        onClick={() => handleBulkToggleActive(false)}
+                        disabled={bulkToggling}
+                      >
+                        Disable ({selectedConnectionIds.length})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        icon="delete"
+                        onClick={handleBulkDelete}
+                      >
+                        Delete Selected ({selectedConnectionIds.length})
+                      </Button>
+                    </>
                   )}
                   <Button
                     size="sm"
