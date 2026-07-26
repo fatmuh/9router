@@ -1,19 +1,18 @@
 /**
  * Multi-step tool calling fix for models that stop prematurely.
  *
- * Problem: kimi-k2.7-code on CF has 40-60% premature stop rate — after
- * receiving a tool result, it generates reasoning then returns finish_reason:"stop"
- * without calling the next tool. This breaks agentic loops (Pi, etc.).
+ * Problem: Some CF Workers AI models (kimi-k2.7-code) return text-only responses
+ * (finish_reason: "stop") in the middle of a multi-step tool-calling task instead
+ * of calling the next tool. This breaks agentic loops in coding agents (Pi, etc.).
  *
- * Fix (layered):
- * 1. cleanConversationHistory: strip reasoning + detect model already tried to
- *    finish via name_session (strip that exchange so model gets clean history)
- * 2. injectSentinelTool: add _router_finish + force tool_choice:"required"
- *    (unless model already tried to finish → use "auto" so it can stop naturally)
- * 3. createSentinelFilterStream / rewriteNonStreamingSentinel: intercept
- *    _router_finish calls → convert to normal stop before client sees them
+ * Fix: When tools are present, force tool_choice:"required" and inject a sentinel
+ * "_router_finish" tool. The model must call a tool every turn. When done, it calls
+ * _router_finish → the router rewrites the response to a normal "stop" with the
+ * summary as text content. The client never sees the sentinel — it just sees a
+ * natural conversation end.
  *
- * Scope: Only kimi-k2.7-code models. GLM-5.2, Llama, etc. are NOT touched.
+ * Scope: Only models flagged with multiStepToolFix capability. GLM-5.2, Llama, etc.
+ * work fine with tool_choice:"auto" and are NOT touched.
  */
 
 const SENTINEL_TOOL_NAME = "_router_finish";
@@ -22,8 +21,8 @@ const SENTINEL_TOOL = {
   function: {
     name: SENTINEL_TOOL_NAME,
     description:
-      "MANDATORY: Call this tool when the task is fully complete and no more work is needed. " +
-      "Provide a concise summary of what was accomplished.",
+      "Call this when the task is fully complete and no more tool calls are needed. " +
+      "Provide a brief summary of what was accomplished.",
     parameters: {
       type: "object",
       properties: {
@@ -63,10 +62,13 @@ export function needsMultiStepFix(provider, model) {
 /**
  * Clean conversation history for kimi-k2.7-code.
  *
- * Handles:
+ * Two issues handled:
  * 1. Move `content` → `reasoning_content` for assistant messages with tool_calls
- * 2. Strip `reasoning_content` from history (prevents premature stop)
- * 3. Handle Anthropic-style array content blocks
+ * 2. Strip `reasoning_content` from history entirely — kimi sees its own past
+ *    reasoning and sometimes interprets it as a "completed answer", causing
+ *    premature stop. Stripping it forces the model to focus on the tool flow.
+ *
+ * Mutates `body` in-place.
  */
 export function cleanConversationHistory(body) {
   if (!Array.isArray(body.messages)) return;
@@ -107,66 +109,12 @@ export function cleanConversationHistory(body) {
     }
 
     // Strip reasoning_content from ALL assistant messages in history.
+    // Kimi is flaky (3/5 times it premature-stops). Removing past reasoning
+    // from context reduces the chance the model interprets it as a final answer.
     if (hasToolCalls && msg.reasoning_content) {
       delete msg.reasoning_content;
     }
   }
-}
-
-/**
- * Convert a non-streaming (JSON) chat completion response into SSE format.
- * Used when we force non-streaming for retry detection but client expects SSE.
- *
- * @param {object} data - Parsed JSON response from provider.
- * @returns {string} SSE-formatted text.
- */
-export function jsonToSSE(data) {
-  const choice = data?.choices?.[0];
-  if (!choice) return "data: [DONE]\n\n";
-
-  const msg = choice.message || {};
-  const chunks = [];
-
-  // Initial role chunk
-  chunks.push(JSON.stringify({
-    id: data.id || "chatcmpl-multistep",
-    object: "chat.completion.chunk",
-    choices: [{ index: 0, delta: { role: "assistant" } }],
-  }));
-
-  // Content
-  if (typeof msg.content === "string" && msg.content.length > 0) {
-    chunks.push(JSON.stringify({
-      id: data.id || "chatcmpl-multistep",
-      object: "chat.completion.chunk",
-      choices: [{ index: 0, delta: { content: msg.content } }],
-    }));
-  }
-
-  // Tool calls
-  if (Array.isArray(msg.tool_calls)) {
-    msg.tool_calls.forEach((tc, i) => {
-      chunks.push(JSON.stringify({
-        id: data.id || "chatcmpl-multistep",
-        object: "chat.completion.chunk",
-        choices: [{ index: 0, delta: { tool_calls: [{
-          index: i,
-          id: tc.id || `call_${i}`,
-          type: "function",
-          function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" },
-        }] } }],
-      }));
-    });
-  }
-
-  // Finish chunk
-  chunks.push(JSON.stringify({
-    id: data.id || "chatcmpl-multistep",
-    object: "chat.completion.chunk",
-    choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason || "stop" }],
-  }));
-
-  return chunks.map(c => `data: ${c}\n\n`).join("") + "data: [DONE]\n\n";
 }
 
 /**
@@ -182,26 +130,26 @@ export function isPrematureStop(responseData) {
   const choice = responseData.choices[0];
   if (choice.finish_reason !== "stop") return false;
   const msg = choice.message || {};
-  const hasContent = typeof msg.content === "string" && msg.content.trim().length > 0;
+  const hasContent = typeof msg.content === "string" && msg.content.length > 0;
   const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
-  // Premature = stop with no useful output (no content, no tool_calls).
-  // Whether or not reasoning_content exists doesn't matter — a blank
-  // response is always premature in a tool-calling workflow.
-  return !hasContent && !hasToolCalls;
+  const hasReasoning = typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0;
+  // Premature = reasoning only, no actual output
+  return hasReasoning && !hasContent && !hasToolCalls;
 }
 
 /**
- * Inject the sentinel tool + anti-premature-stop system prompt.
+ * Inject the sentinel tool and force tool_choice:"required".
  *
- * kimi-k2.7-code has a 40-60% premature stop rate with tool_choice:"auto".
- * tool_choice:"required" fixes it but causes name_session loops because the
- * model is forced to call a tool even when done.
+ * kimi-k2.7-code has a 40-60% premature stop rate with tool_choice:"auto" —
+ * it generates reasoning then stops without calling a tool. Forcing "required"
+ * eliminates this: model ALWAYS calls a tool. The sentinel `_router_finish`
+ * gives it an escape hatch when the task is complete. The streaming filter
+ * (createSentinelFilterStream) and non-streaming rewriter convert
+ * _router_finish calls to normal stops before they reach the client.
  *
- * New approach: use "auto" + inject a strong system instruction that tells
- * the model to ALWAYS produce content or tool_calls, never reasoning-only.
- * The _router_finish tool is available as an explicit exit hatch.
+ * Mutates `body` in-place. Only acts when tools are already present.
  *
- * @param {object} body - The translated request body.
+ * @param {object} body - The translated request body (OpenAI-compatible shape).
  * @returns {boolean} true if injection was applied.
  */
 export function injectSentinelTool(body) {
@@ -213,44 +161,14 @@ export function injectSentinelTool(body) {
   // Don't override an explicit "none" from the client
   if (body.tool_choice === "none") return false;
 
-  // Add sentinel as exit hatch
   body.tools = [...body.tools, SENTINEL_TOOL];
-
-  // Keep "auto" — let the model decide. We rely on the system prompt below
-  // to prevent premature stops, not on forced tool_choice.
-  // DO NOT set "required" — it causes name_session loops.
-
-  // Inject anti-premature-stop system instruction.
-  // Prepend to existing system message, or create one at position 0.
-  const INSTRUCTION =
-    "\n\n--- ROUTER INSTRUCTION ---\n" +
-    "CRITICAL: You MUST NOT stop after generating only reasoning/thinking. " +
-    "Every response MUST contain either (a) tool_calls to continue working, " +
-    "or (b) visible text content as your reply, or (c) a call to _router_finish. " +
-    "If the task is incomplete, call the next tool. If the task is done, " +
-    "call _router_finish with a summary. NEVER return a response with only " +
-    "reasoning and no output — this will be treated as an error.";
-
-  if (!Array.isArray(body.messages)) return true;
-
-  const firstMsg = body.messages[0];
-  if (firstMsg && firstMsg.role === "system") {
-    // Append to existing system message
-    if (typeof firstMsg.content === "string") {
-      firstMsg.content += INSTRUCTION;
-    } else {
-      firstMsg.content = (firstMsg.content || "") + INSTRUCTION;
-    }
-  } else {
-    // Insert new system message at the beginning
-    body.messages.unshift({ role: "system", content: INSTRUCTION.trim() });
-  }
+  body.tool_choice = "required";
 
   return true;
 }
 
 /**
- * Check if a tool_calls array contains the sentinel (_router_finish).
+ * Check if a tool_calls array contains the sentinel tool.
  * @param {array} toolCalls
  * @returns {object|null} The sentinel tool call, or null.
  */
@@ -415,7 +333,7 @@ export function createSentinelFilterStream() {
 
     const delta = choice.delta || {};
 
-    // Detect sentinel tool call (_router_finish only)
+    // Detect sentinel tool call by name in any delta
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
         if (tc?.function?.name === SENTINEL_TOOL_NAME) {
