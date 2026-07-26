@@ -1,33 +1,28 @@
 /**
  * Multi-step tool calling fix for models that stop prematurely.
  *
- * Problem: Some CF Workers AI models (kimi-k2.7-code) return text-only responses
- * (finish_reason: "stop") in the middle of a multi-step tool-calling task instead
- * of calling the next tool. This breaks agentic loops in coding agents (Pi, etc.).
+ * Problem: kimi-k2.7-code on CF has 40-60% premature stop rate — after
+ * receiving a tool result, it generates reasoning then returns finish_reason:"stop"
+ * without calling the next tool. This breaks agentic loops (Pi, etc.).
  *
- * Fix: When tools are present, force tool_choice:"required" and inject a sentinel
- * "_router_finish" tool. The model must call a tool every turn. When done, it calls
- * _router_finish → the router rewrites the response to a normal "stop" with the
- * summary as text content. The client never sees the sentinel — it just sees a
- * natural conversation end.
+ * Fix (layered):
+ * 1. cleanConversationHistory: strip reasoning + detect model already tried to
+ *    finish via name_session (strip that exchange so model gets clean history)
+ * 2. injectSentinelTool: add _router_finish + force tool_choice:"required"
+ *    (unless model already tried to finish → use "auto" so it can stop naturally)
+ * 3. createSentinelFilterStream / rewriteNonStreamingSentinel: intercept
+ *    _router_finish calls → convert to normal stop before client sees them
  *
- * Scope: Only models flagged with multiStepToolFix capability. GLM-5.2, Llama, etc.
- * work fine with tool_choice:"auto" and are NOT touched.
+ * Scope: Only kimi-k2.7-code models. GLM-5.2, Llama, etc. are NOT touched.
  */
 
 const SENTINEL_TOOL_NAME = "_router_finish";
-
-// Tools that the model calls as an implicit "I'm done" signal.
-// When tool_choice:required forces a tool call, kimi often picks name_session
-// instead of _router_finish to indicate completion. We intercept these too.
-const IMPLICIT_SENTINELS = new Set(["_router_finish", "name_session"]);
 const SENTINEL_TOOL = {
   type: "function",
   function: {
     name: SENTINEL_TOOL_NAME,
     description:
-      "MANDATORY completion signal. Call this tool — and ONLY this tool — when the user's task is fully complete. " +
-      "Do NOT call name_session, biome_check, or any other tool to indicate you are done. " +
+      "MANDATORY: Call this tool when the task is fully complete and no more work is needed. " +
       "Provide a concise summary of what was accomplished.",
     parameters: {
       type: "object",
@@ -68,16 +63,36 @@ export function needsMultiStepFix(provider, model) {
 /**
  * Clean conversation history for kimi-k2.7-code.
  *
- * Two issues handled:
+ * Handles:
  * 1. Move `content` → `reasoning_content` for assistant messages with tool_calls
- * 2. Strip `reasoning_content` from history entirely — kimi sees its own past
- *    reasoning and sometimes interprets it as a "completed answer", causing
- *    premature stop. Stripping it forces the model to focus on the tool flow.
+ * 2. Strip `reasoning_content` from history (prevents premature stop)
+ * 3. Detect trailing name_session exchange → strip it (model tried to finish
+ *    via name_session because tool_choice:required forced a tool call)
  *
- * Mutates `body` in-place.
+ * @returns {boolean} true if a completion signal (name_session) was stripped.
  */
 export function cleanConversationHistory(body) {
-  if (!Array.isArray(body.messages)) return;
+  if (!Array.isArray(body.messages)) return false;
+
+  // Detect trailing name_session exchange and strip it.
+  // Pattern: [..., assistant(name_session only), tool(name_session result)]
+  // The model called name_session because tool_choice:required forced it to.
+  // Strip the exchange so model sees clean history ending with real work.
+  let strippedCompletion = false;
+  const msgs = body.messages;
+  while (msgs.length >= 2) {
+    const last = msgs[msgs.length - 1];
+    const prev = msgs[msgs.length - 2];
+    const isNameSessionExchange =
+      last?.role === "tool" &&
+      prev?.role === "assistant" &&
+      Array.isArray(prev.tool_calls) &&
+      prev.tool_calls.length > 0 &&
+      prev.tool_calls.every(tc => tc?.function?.name === "name_session");
+    if (!isNameSessionExchange) break;
+    msgs.splice(msgs.length - 2, 2);
+    strippedCompletion = true;
+  }
 
   for (const msg of body.messages) {
     if (msg.role !== "assistant") continue;
@@ -115,12 +130,12 @@ export function cleanConversationHistory(body) {
     }
 
     // Strip reasoning_content from ALL assistant messages in history.
-    // Kimi is flaky (3/5 times it premature-stops). Removing past reasoning
-    // from context reduces the chance the model interprets it as a final answer.
     if (hasToolCalls && msg.reasoning_content) {
       delete msg.reasoning_content;
     }
   }
+
+  return strippedCompletion;
 }
 
 /**
@@ -144,25 +159,21 @@ export function isPrematureStop(responseData) {
 }
 
 /**
- * Inject the sentinel tool and conditionally force tool_choice:"required".
+ * Inject the sentinel tool and force tool_choice:"required".
  *
- * kimi-k2.7-code has a 40-60% premature stop rate AFTER receiving a tool result:
- * model gets the result, generates reasoning, then stops without calling the
- * next tool. Forcing "required" ONLY in that scenario prevents the premature
- * stop while allowing natural completion on other turns.
+ * kimi-k2.7-code has a 40-60% premature stop rate — it generates reasoning then
+ * stops without calling the next tool. Forcing "required" eliminates this.
  *
- * Rules:
- * - Always add _router_finish to the tool list (exit hatch)
- * - Set tool_choice:"required" ONLY when the last message is a tool result
- *   (this is where premature stops happen)
- * - First turn, user messages, etc. → keep original tool_choice (auto)
+ * The model's natural "I'm done" signal is calling name_session. When that
+ * happens, cleanConversationHistory strips the exchange and returns true.
+ * In that case we use "auto" instead of "required" so the model can generate
+ * a proper summary and stop naturally.
  *
- * Mutates `body` in-place. Only acts when tools are already present.
- *
- * @param {object} body - The translated request body (OpenAI-compatible shape).
+ * @param {object} body - The translated request body.
+ * @param {boolean} modelTriedToFinish - True if name_session exchange was stripped.
  * @returns {boolean} true if injection was applied.
  */
-export function injectSentinelTool(body) {
+export function injectSentinelTool(body, modelTriedToFinish = false) {
   if (!Array.isArray(body.tools) || body.tools.length === 0) return false;
 
   // Don't double-inject
@@ -174,24 +185,27 @@ export function injectSentinelTool(body) {
   // Always add sentinel as exit hatch
   body.tools = [...body.tools, SENTINEL_TOOL];
 
-  // Force required on ALL turns — premature stop (40-60%) happens on any turn,
-  // not just after tool results. The streaming filter intercepts both
-  // _router_finish AND name_session as completion signals.
-  body.tool_choice = "required";
+  // If model already tried to finish (name_session stripped from history),
+  // let it stop naturally with "auto". Otherwise force "required" to prevent
+  // the 40-60% premature stop.
+  if (modelTriedToFinish) {
+    body.tool_choice = "auto";
+  } else {
+    body.tool_choice = "required";
+  }
 
   return true;
 }
 
 /**
- * Check if a tool_calls array contains a sentinel tool.
- * Matches both _router_finish AND name_session (implicit completion signal).
+ * Check if a tool_calls array contains the sentinel (_router_finish).
  * @param {array} toolCalls
  * @returns {object|null} The sentinel tool call, or null.
  */
 function findSentinelCall(toolCalls) {
   if (!Array.isArray(toolCalls)) return null;
   return toolCalls.find(
-    (tc) => IMPLICIT_SENTINELS.has(tc?.function?.name)
+    (tc) => tc?.function?.name === SENTINEL_TOOL_NAME
   ) || null;
 }
 
@@ -211,18 +225,18 @@ export function rewriteNonStreamingSentinel(responseData) {
 
   if (!sentinel) return null;
 
-  // Extract summary: _router_finish has `summary`, name_session has `title`
+  // Extract summary from sentinel args
   let summary = "";
   try {
     const args = JSON.parse(sentinel.function.arguments || "{}");
-    summary = args.summary || args.title || "";
+    summary = args.summary || "";
   } catch {
     summary = "";
   }
 
   // Build clean message: keep any non-sentinel tool calls, set text content
   const remainingTools = msg.tool_calls.filter(
-    (tc) => !IMPLICIT_SENTINELS.has(tc?.function?.name)
+    (tc) => tc?.function?.name !== SENTINEL_TOOL_NAME
   );
 
   const newMessage = {
@@ -280,13 +294,13 @@ export function rewriteStreamingSentinel(assembledMessage, finishReason) {
   let summary = "";
   try {
     const args = JSON.parse(sentinel.function.arguments || "{}");
-    summary = args.summary || args.title || "";
+    summary = args.summary || "";
   } catch {
     summary = "";
   }
 
   const remainingTools = (assembledMessage.tool_calls || []).filter(
-    (tc) => !IMPLICIT_SENTINELS.has(tc?.function?.name)
+    (tc) => tc?.function?.name !== SENTINEL_TOOL_NAME
   );
 
   const newMessage = {
@@ -349,11 +363,10 @@ export function createSentinelFilterStream() {
 
     const delta = choice.delta || {};
 
-    // Detect sentinel tool call by name in any delta.
-    // Matches both _router_finish AND name_session (implicit completion).
+    // Detect sentinel tool call (_router_finish only)
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
-        if (IMPLICIT_SENTINELS.has(tc?.function?.name)) {
+        if (tc?.function?.name === SENTINEL_TOOL_NAME) {
           sentinelActive = true;
           sentinelIndex = tc.index ?? 0;
         }
@@ -387,12 +400,11 @@ export function createSentinelFilterStream() {
     // Rewrite finish_reason when sentinel was the completion trigger
     if (choice.finish_reason === "tool_calls") {
       choice.finish_reason = "stop";
-      // Emit accumulated summary/title as content
+      // Emit accumulated summary as content
       try {
         const parsed = JSON.parse(accumulatedArgs);
-        const text = parsed.summary || parsed.title || "";
-        if (text) {
-          delta.content = (delta.content || "") + text;
+        if (parsed.summary) {
+          delta.content = (delta.content || "") + parsed.summary;
         }
       } catch { /* malformed args — no summary */ }
     }
