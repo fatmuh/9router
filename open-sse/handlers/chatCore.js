@@ -439,14 +439,36 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
         });
       }
 
-      // Convert JSON → SSE if client originally wanted streaming
+      // Convert JSON → SSE if client originally wanted streaming.
+      // Return directly — skip the normal streaming handler since we already
+      // have the complete response (no need for transform/sentinel streams).
       if (clientRequestedStreaming) {
         const finalData = rewritten || data;
         const sseText = jsonToSSE(finalData);
-        providerResponse = new Response(sseText, {
-          status: 200,
-          headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
-        });
+        streamController.handleComplete();
+        trackPendingRequest(model, provider, connectionId, false);
+        appendRequestLog({ model, provider, connectionId, status: "SUCCESS" }).catch(() => { });
+        if (log?.line) log.line(reqTag, "✓", `MULTISTEP · JSON→SSE · ${provider}/${model} · ${Date.now() - requestStartTime}ms`);
+        return {
+          success: true,
+          response: new Response(sseText, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'Access-Control-Allow-Origin': '*' },
+          }),
+        };
+      }
+
+      // Client wanted JSON — return the rewritten JSON directly
+      if (rewritten) {
+        streamController.handleComplete();
+        trackPendingRequest(model, provider, connectionId, false);
+        return {
+          success: true,
+          response: new Response(JSON.stringify(rewritten), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+          }),
+        };
       }
     } catch { /* fall through to normal handling */ }
   }

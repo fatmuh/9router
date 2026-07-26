@@ -182,11 +182,12 @@ export function isPrematureStop(responseData) {
   const choice = responseData.choices[0];
   if (choice.finish_reason !== "stop") return false;
   const msg = choice.message || {};
-  const hasContent = typeof msg.content === "string" && msg.content.length > 0;
+  const hasContent = typeof msg.content === "string" && msg.content.trim().length > 0;
   const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
-  const hasReasoning = typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0;
-  // Premature = reasoning only, no actual output
-  return hasReasoning && !hasContent && !hasToolCalls;
+  // Premature = stop with no useful output (no content, no tool_calls).
+  // Whether or not reasoning_content exists doesn't matter — a blank
+  // response is always premature in a tool-calling workflow.
+  return !hasContent && !hasToolCalls;
 }
 
 /**
