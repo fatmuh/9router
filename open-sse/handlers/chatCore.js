@@ -20,7 +20,7 @@ import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
-import { needsMultiStepFix, injectSentinelTool, rewriteNonStreamingSentinel, rewriteStreamingSentinel } from "../utils/multiStepToolFix.js";
+import { needsMultiStepFix, cleanConversationHistory, rewriteNonStreamingSentinel, rewriteStreamingSentinel } from "../utils/multiStepToolFix.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { injectPonytail } from "../rtk/ponytail.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";
@@ -241,14 +241,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   if (xf.length && log?.line) log.line(reqTag, "⚙", xf.join(" · "));
 
-  // Multi-step tool fix: force tool_choice:"required" + sentinel for models that
-  // stop prematurely mid agentic loop (kimi-k2.7-code on CF). Only when tools present.
+  // Multi-step tool fix: clean conversation history for kimi-k2.7-code.
+  // Moves assistant thinking text from `content` → `reasoning_content` so the
+  // model doesn't confuse its own thinking with a completed response.
   let multiStepFixApplied = false;
   if (!passthrough && needsMultiStepFix(alias || provider, upstreamModel)) {
-    multiStepFixApplied = injectSentinelTool(translatedBody);
-    if (multiStepFixApplied) {
-      log?.debug?.("MULTISTEP", `injected _router_finish sentinel for ${model} (tool_choice preserved)`);
-    }
+    cleanConversationHistory(translatedBody);
+    multiStepFixApplied = true;
+    log?.debug?.("MULTISTEP", `cleaned conversation history for ${model} (content→reasoning_content)`);
   }
 
   const executor = getExecutor(provider);

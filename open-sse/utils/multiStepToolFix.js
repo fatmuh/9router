@@ -39,18 +39,49 @@ const SENTINEL_TOOL = {
 /**
  * Check if a model needs the multi-step tool fix.
  *
- * DISABLED: The sentinel _router_finish approach caused infinite loops — Pi
- * (and other agents) don't recognize the injected sentinel tool, return an
- * error, and the model keeps calling tools trying to "finish". The original
- * "premature stop" bug was actually caused by maxTokens being too low (16384
- * vs the model's 262K context), not a model behavior issue. Once maxTokens
- * was fixed, kimi-k2.7-code handles multi-turn tool calling correctly with
- * tool_choice:"auto" alone.
+ * ROOT CAUSE FOUND: kimi-k2.7-code on CF misinterprets assistant messages that
+ * contain BOTH `content` (thinking text) AND `tool_calls`. The model sees the
+ * content as its "answer" and stops with finish_reason:"stop" instead of calling
+ * the next tool. This happens when agents like Pi send conversation history with
+ * thinking/reasoning stored in the `content` field.
  *
- * Always returns false. Kept for reference / potential future use.
+ * Fix: cleanConversationHistory() moves `content` → `reasoning_content` for
+ * assistant messages that have tool_calls, so the model doesn't confuse thinking
+ * with a completed response.
  */
-export function needsMultiStepFix(_provider, _model) {
-  return false;
+export function needsMultiStepFix(provider, model) {
+  if (!model || !provider) return false;
+  const KIMI_PATTERNS = [
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+  ];
+  const baseModel = model.includes("/") ? model.split("/").pop() : model;
+  return KIMI_PATTERNS.some((p) => baseModel === p);
+}
+
+/**
+ * Clean conversation history for kimi-k2.7-code.
+ *
+ * Moves `content` → `reasoning_content` for assistant messages that have
+ * tool_calls. Without this, kimi sees the thinking text as a completed
+ * response and stops prematurely (finish_reason:"stop" with no tool call).
+ *
+ * Mutates `body` in-place.
+ *
+ * @param {object} body - The translated request body (OpenAI-compatible shape).
+ */
+export function cleanConversationHistory(body) {
+  if (!Array.isArray(body.messages)) return;
+
+  for (const msg of body.messages) {
+    if (msg.role !== "assistant") continue;
+    if (!Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0) continue;
+    if (typeof msg.content !== "string" || msg.content.length === 0) continue;
+
+    // Move content → reasoning_content so kimi treats it as internal thinking
+    msg.reasoning_content = (msg.reasoning_content || "") + msg.content;
+    msg.content = null;
+  }
 }
 
 /**
