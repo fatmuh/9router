@@ -253,7 +253,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     cleanConversationHistory(translatedBody);
     multiStepFixApplied = injectSentinelTool(translatedBody);
     if (multiStepFixApplied) {
-      log?.debug?.("MULTISTEP", `sentinel + tool_choice:required for ${model}`);
+      const lastRole = translatedBody.messages?.[translatedBody.messages.length - 1]?.role || "?";
+      const mode = lastRole === "tool" ? "required" : "auto";
+      log?.debug?.("MULTISTEP", `sentinel injected for ${model} | last_msg=${lastRole} | tool_choice=${mode}`);
     }
   }
 

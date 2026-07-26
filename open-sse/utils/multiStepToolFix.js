@@ -21,8 +21,9 @@ const SENTINEL_TOOL = {
   function: {
     name: SENTINEL_TOOL_NAME,
     description:
-      "Call this when the task is fully complete and no more tool calls are needed. " +
-      "Provide a brief summary of what was accomplished.",
+      "MANDATORY completion signal. Call this tool — and ONLY this tool — when the user's task is fully complete. " +
+      "Do NOT call name_session, biome_check, or any other tool to indicate you are done. " +
+      "Provide a concise summary of what was accomplished.",
     parameters: {
       type: "object",
       properties: {
@@ -138,14 +139,18 @@ export function isPrematureStop(responseData) {
 }
 
 /**
- * Inject the sentinel tool and force tool_choice:"required".
+ * Inject the sentinel tool and conditionally force tool_choice:"required".
  *
- * kimi-k2.7-code has a 40-60% premature stop rate with tool_choice:"auto" —
- * it generates reasoning then stops without calling a tool. Forcing "required"
- * eliminates this: model ALWAYS calls a tool. The sentinel `_router_finish`
- * gives it an escape hatch when the task is complete. The streaming filter
- * (createSentinelFilterStream) and non-streaming rewriter convert
- * _router_finish calls to normal stops before they reach the client.
+ * kimi-k2.7-code has a 40-60% premature stop rate AFTER receiving a tool result:
+ * model gets the result, generates reasoning, then stops without calling the
+ * next tool. Forcing "required" ONLY in that scenario prevents the premature
+ * stop while allowing natural completion on other turns.
+ *
+ * Rules:
+ * - Always add _router_finish to the tool list (exit hatch)
+ * - Set tool_choice:"required" ONLY when the last message is a tool result
+ *   (this is where premature stops happen)
+ * - First turn, user messages, etc. → keep original tool_choice (auto)
  *
  * Mutates `body` in-place. Only acts when tools are already present.
  *
@@ -161,8 +166,19 @@ export function injectSentinelTool(body) {
   // Don't override an explicit "none" from the client
   if (body.tool_choice === "none") return false;
 
+  // Always add sentinel as exit hatch
   body.tools = [...body.tools, SENTINEL_TOOL];
-  body.tool_choice = "required";
+
+  // Only force "required" when the last message is a tool result.
+  // Premature stops happen here: model gets feedback → generates reasoning → stops.
+  // On first turn / user messages, let the model choose freely (auto).
+  const messages = body.messages || [];
+  const lastMsg = messages[messages.length - 1];
+  const afterToolResult = lastMsg && lastMsg.role === "tool";
+
+  if (afterToolResult) {
+    body.tool_choice = "required";
+  }
 
   return true;
 }
