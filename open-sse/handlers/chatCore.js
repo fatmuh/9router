@@ -20,7 +20,7 @@ import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
-import { needsMultiStepFix, cleanConversationHistory, injectSentinelTool, isPrematureStop, rewriteNonStreamingSentinel, rewriteStreamingSentinel, jsonToSSE } from "../utils/multiStepToolFix.js";
+import { needsMultiStepFix, cleanConversationHistory } from "../utils/multiStepToolFix.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { injectPonytail } from "../rtk/ponytail.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";
@@ -241,20 +241,15 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   if (xf.length && log?.line) log.line(reqTag, "⚙", xf.join(" · "));
 
-  // Multi-step tool fix for kimi-k2.7-code on CF.
-  // The model is flaky (40-60% premature stop rate after tool results).
-  // Fix: 1) clean history (strip reasoning from assistant messages with tool_calls)
-  //      2) inject _router_finish sentinel + force tool_choice:"required"
-  //      3) streaming/non-streaming filters convert _router_finish → normal stop
-  // Result: model ALWAYS calls a tool (no premature stop), and uses _router_finish
-  // as its escape hatch when done. Pi never sees the sentinel.
+  // Multi-step fix for kimi-k2.7-code: clean conversation history only.
+  // The model sees reasoning_content in assistant messages and interprets
+  // them as completed answers → 40-60% premature stop rate.
+  // cleanConversationHistory strips reasoning and normalizes content.
   let multiStepFixApplied = false;
   if (!passthrough && needsMultiStepFix(alias || provider, upstreamModel)) {
     cleanConversationHistory(translatedBody);
-    multiStepFixApplied = injectSentinelTool(translatedBody);
-    if (multiStepFixApplied) {
-      log?.debug?.("MULTISTEP", `sentinel + system prompt for ${model} | tool_choice=auto`);
-    }
+    multiStepFixApplied = true;
+    log?.debug?.("MULTISTEP", `history cleaned for ${model}`);
   }
 
   const executor = getExecutor(provider);
@@ -306,21 +301,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log?.debug?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | no_proxy=${proxyOptions.connectionNoProxy}`);
   }
 
-  // Multi-step fix: force non-streaming so we can detect premature stops and retry.
-  // Pi expects SSE, so we convert JSON → SSE after retries.
-  // MUST update translatedBody.stream too — executor sends body JSON directly to CF,
-  // and stream:true in the body overrides the stream parameter.
-  const cfStream = multiStepFixApplied ? false : stream;
-  if (multiStepFixApplied) {
-    translatedBody.stream = false;
-    delete translatedBody.stream_options;
-  }
   // Execute request
   let providerResponse, providerUrl, providerHeaders, finalBody;
   // exception: it is decoded by the executor into OpenAI-compatible output.
   let providerResponseFormat = targetFormat;
   try {
-    const result = await executor.execute({ model, body: translatedBody, stream: cfStream, credentials, signal: streamController.signal, log, proxyOptions });
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
     providerResponse = result.response;
     providerUrl = result.url;
     providerHeaders = result.headers;
@@ -363,7 +349,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          const retryResult = await executor.execute({ model, body: translatedBody, stream: cfStream, credentials, signal: streamController.signal, log, proxyOptions });
+          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
@@ -401,82 +387,6 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     reqLogger.logError(new Error(message), finalBody || translatedBody);
     return createErrorResult(statusCode, errMsg, resetsAtMs);
-  }
-
-  // ─── Multi-step auto-retry + SSE conversion ───────────────────────────────
-  // When multiStepFix is active, we forced non-streaming (cfStream=false).
-  // Now we: (1) detect premature stops and retry, (2) apply sentinel rewrite,
-  // (3) convert JSON → SSE if client wanted streaming.
-  if (multiStepFixApplied && providerResponse.ok) {
-    const MAX_RETRIES = 2;
-    let retriesLeft = MAX_RETRIES;
-
-    while (retriesLeft > 0) {
-      // Read response JSON to check for premature stop
-      let respData = null;
-      try { respData = await providerResponse.clone().json(); } catch { break; }
-      if (!respData || !isPrematureStop(respData)) break;
-
-      retriesLeft--;
-      const attempt = MAX_RETRIES - retriesLeft;
-      if (log?.line) log.line(reqTag, "🔄", `MULTISTEP premature stop · retry ${attempt}/${MAX_RETRIES} · ${provider}/${model}`);
-
-      try {
-        const retryRes = await executor.execute({
-          model, body: translatedBody, stream: false, credentials,
-          signal: streamController.signal, log, proxyOptions,
-        });
-        if (retryRes.response.ok) {
-          providerResponse = retryRes.response;
-          finalBody = retryRes.transformedBody;
-        }
-      } catch { break; }
-    }
-
-    // Apply sentinel rewrite (convert _router_finish → normal stop)
-    try {
-      const data = await providerResponse.clone().json();
-      const rewritten = rewriteNonStreamingSentinel(data);
-      if (rewritten) {
-        providerResponse = new Response(JSON.stringify(rewritten), {
-          status: providerResponse.status,
-          statusText: providerResponse.statusText,
-          headers: providerResponse.headers,
-        });
-      }
-
-      // Convert JSON → SSE if client originally wanted streaming.
-      // Return directly — skip the normal streaming handler since we already
-      // have the complete response (no need for transform/sentinel streams).
-      if (clientRequestedStreaming) {
-        const finalData = rewritten || data;
-        const sseText = jsonToSSE(finalData);
-        streamController.handleComplete();
-        trackPendingRequest(model, provider, connectionId, false);
-        appendRequestLog({ model, provider, connectionId, status: "SUCCESS" }).catch(() => { });
-        if (log?.line) log.line(reqTag, "✓", `MULTISTEP · JSON→SSE · ${provider}/${model} · ${Date.now() - requestStartTime}ms`);
-        return {
-          success: true,
-          response: new Response(sseText, {
-            status: 200,
-            headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'Access-Control-Allow-Origin': '*' },
-          }),
-        };
-      }
-
-      // Client wanted JSON — return the rewritten JSON directly
-      if (rewritten) {
-        streamController.handleComplete();
-        trackPendingRequest(model, provider, connectionId, false);
-        return {
-          success: true,
-          response: new Response(JSON.stringify(rewritten), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-          }),
-        };
-      }
-    } catch { /* fall through to normal handling */ }
   }
 
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, multiStepFixApplied };
