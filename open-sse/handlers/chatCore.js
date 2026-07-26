@@ -247,7 +247,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (!passthrough && needsMultiStepFix(alias || provider, upstreamModel)) {
     multiStepFixApplied = injectSentinelTool(translatedBody);
     if (multiStepFixApplied) {
-      log?.debug?.("MULTISTEP", `forced tool_choice:"required" + _router_finish sentinel for ${model}`);
+      log?.debug?.("MULTISTEP", `injected _router_finish sentinel for ${model} (tool_choice preserved)`);
     }
   }
 

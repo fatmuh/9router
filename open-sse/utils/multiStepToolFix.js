@@ -58,7 +58,17 @@ export function needsMultiStepFix(provider, model) {
 }
 
 /**
- * Inject the sentinel tool and force tool_choice:"required".
+ * Inject the sentinel tool for multi-step tool calling.
+ *
+ * IMPORTANT: We do NOT force tool_choice:"required". Forcing "required" causes
+ * infinite tool-call loops — the model can't output a text-only final response,
+ * so it keeps calling filler tools (name_session, biome_check, etc.) forever.
+ *
+ * Instead we keep tool_choice at whatever the client set (usually "auto") and
+ * inject the sentinel tool with a very explicit description. If the model calls
+ * _router_finish → we rewrite it to a clean stop. If the model stops naturally
+ * with text → that's fine too, the response passes through unchanged.
+ *
  * Mutates `body` in-place. Only acts when tools are already present.
  *
  * @param {object} body - The translated request body (OpenAI-compatible shape).
@@ -74,7 +84,7 @@ export function injectSentinelTool(body) {
   if (body.tool_choice === "none") return false;
 
   body.tools = [...body.tools, SENTINEL_TOOL];
-  body.tool_choice = "required";
+  // Keep existing tool_choice (usually "auto"). Do NOT force "required".
 
   return true;
 }
