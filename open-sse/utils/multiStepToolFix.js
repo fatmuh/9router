@@ -114,6 +114,62 @@ export function cleanConversationHistory(body) {
 }
 
 /**
+ * Convert a non-streaming (JSON) chat completion response into SSE format.
+ * Used when we force non-streaming for retry detection but client expects SSE.
+ *
+ * @param {object} data - Parsed JSON response from provider.
+ * @returns {string} SSE-formatted text.
+ */
+export function jsonToSSE(data) {
+  const choice = data?.choices?.[0];
+  if (!choice) return "data: [DONE]\n\n";
+
+  const msg = choice.message || {};
+  const chunks = [];
+
+  // Initial role chunk
+  chunks.push(JSON.stringify({
+    id: data.id || "chatcmpl-multistep",
+    object: "chat.completion.chunk",
+    choices: [{ index: 0, delta: { role: "assistant" } }],
+  }));
+
+  // Content
+  if (typeof msg.content === "string" && msg.content.length > 0) {
+    chunks.push(JSON.stringify({
+      id: data.id || "chatcmpl-multistep",
+      object: "chat.completion.chunk",
+      choices: [{ index: 0, delta: { content: msg.content } }],
+    }));
+  }
+
+  // Tool calls
+  if (Array.isArray(msg.tool_calls)) {
+    msg.tool_calls.forEach((tc, i) => {
+      chunks.push(JSON.stringify({
+        id: data.id || "chatcmpl-multistep",
+        object: "chat.completion.chunk",
+        choices: [{ index: 0, delta: { tool_calls: [{
+          index: i,
+          id: tc.id || `call_${i}`,
+          type: "function",
+          function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" },
+        }] } }],
+      }));
+    });
+  }
+
+  // Finish chunk
+  chunks.push(JSON.stringify({
+    id: data.id || "chatcmpl-multistep",
+    object: "chat.completion.chunk",
+    choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason || "stop" }],
+  }));
+
+  return chunks.map(c => `data: ${c}\n\n`).join("") + "data: [DONE]\n\n";
+}
+
+/**
  * Detect a premature stop: model returned finish_reason:"stop" with only
  * reasoning (no content, no tool_calls). This is the known flaky behavior
  * of kimi-k2.7-code on CF.
