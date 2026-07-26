@@ -78,9 +78,6 @@ export function cleanConversationHistory(body) {
     if (msg.role !== "assistant") continue;
     const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
 
-    // Log the actual format we see (for debugging)
-    console.log(`[MULTISTEP] assistant msg: content_type=${typeof msg.content} content_val=${JSON.stringify(msg.content)?.slice(0, 100)} has_tool_calls=${hasToolCalls} keys=${Object.keys(msg).join(",")}`);
-
     if (hasToolCalls && typeof msg.content === "string" && msg.content.length > 0) {
       msg.reasoning_content = (msg.reasoning_content || "") + msg.content;
       msg.content = null;
@@ -111,10 +108,6 @@ export function cleanConversationHistory(body) {
         cleaned++;
       }
     }
-  }
-
-  if (cleaned > 0) {
-    console.log(`[MULTISTEP] cleanConversationHistory: fixed ${cleaned} assistant message(s)`);
   }
 }
 
