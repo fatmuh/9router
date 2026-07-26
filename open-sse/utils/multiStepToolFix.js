@@ -16,6 +16,11 @@
  */
 
 const SENTINEL_TOOL_NAME = "_router_finish";
+
+// Tools that the model calls as an implicit "I'm done" signal.
+// When tool_choice:required forces a tool call, kimi often picks name_session
+// instead of _router_finish to indicate completion. We intercept these too.
+const IMPLICIT_SENTINELS = new Set(["_router_finish", "name_session"]);
 const SENTINEL_TOOL = {
   type: "function",
   function: {
@@ -169,29 +174,24 @@ export function injectSentinelTool(body) {
   // Always add sentinel as exit hatch
   body.tools = [...body.tools, SENTINEL_TOOL];
 
-  // Only force "required" when the last message is a tool result.
-  // Premature stops happen here: model gets feedback → generates reasoning → stops.
-  // On first turn / user messages, let the model choose freely (auto).
-  const messages = body.messages || [];
-  const lastMsg = messages[messages.length - 1];
-  const afterToolResult = lastMsg && lastMsg.role === "tool";
-
-  if (afterToolResult) {
-    body.tool_choice = "required";
-  }
+  // Force required on ALL turns — premature stop (40-60%) happens on any turn,
+  // not just after tool results. The streaming filter intercepts both
+  // _router_finish AND name_session as completion signals.
+  body.tool_choice = "required";
 
   return true;
 }
 
 /**
- * Check if a tool_calls array contains the sentinel tool.
+ * Check if a tool_calls array contains a sentinel tool.
+ * Matches both _router_finish AND name_session (implicit completion signal).
  * @param {array} toolCalls
  * @returns {object|null} The sentinel tool call, or null.
  */
 function findSentinelCall(toolCalls) {
   if (!Array.isArray(toolCalls)) return null;
   return toolCalls.find(
-    (tc) => tc?.function?.name === SENTINEL_TOOL_NAME
+    (tc) => IMPLICIT_SENTINELS.has(tc?.function?.name)
   ) || null;
 }
 
@@ -211,18 +211,18 @@ export function rewriteNonStreamingSentinel(responseData) {
 
   if (!sentinel) return null;
 
-  // Extract summary from sentinel args
+  // Extract summary: _router_finish has `summary`, name_session has `title`
   let summary = "";
   try {
     const args = JSON.parse(sentinel.function.arguments || "{}");
-    summary = args.summary || "";
+    summary = args.summary || args.title || "";
   } catch {
     summary = "";
   }
 
   // Build clean message: keep any non-sentinel tool calls, set text content
   const remainingTools = msg.tool_calls.filter(
-    (tc) => tc?.function?.name !== SENTINEL_TOOL_NAME
+    (tc) => !IMPLICIT_SENTINELS.has(tc?.function?.name)
   );
 
   const newMessage = {
@@ -280,13 +280,13 @@ export function rewriteStreamingSentinel(assembledMessage, finishReason) {
   let summary = "";
   try {
     const args = JSON.parse(sentinel.function.arguments || "{}");
-    summary = args.summary || "";
+    summary = args.summary || args.title || "";
   } catch {
     summary = "";
   }
 
   const remainingTools = (assembledMessage.tool_calls || []).filter(
-    (tc) => tc?.function?.name !== SENTINEL_TOOL_NAME
+    (tc) => !IMPLICIT_SENTINELS.has(tc?.function?.name)
   );
 
   const newMessage = {
@@ -349,10 +349,11 @@ export function createSentinelFilterStream() {
 
     const delta = choice.delta || {};
 
-    // Detect sentinel tool call by name in any delta
+    // Detect sentinel tool call by name in any delta.
+    // Matches both _router_finish AND name_session (implicit completion).
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
-        if (tc?.function?.name === SENTINEL_TOOL_NAME) {
+        if (IMPLICIT_SENTINELS.has(tc?.function?.name)) {
           sentinelActive = true;
           sentinelIndex = tc.index ?? 0;
         }
@@ -386,11 +387,12 @@ export function createSentinelFilterStream() {
     // Rewrite finish_reason when sentinel was the completion trigger
     if (choice.finish_reason === "tool_calls") {
       choice.finish_reason = "stop";
-      // Emit accumulated summary as content
+      // Emit accumulated summary/title as content
       try {
         const parsed = JSON.parse(accumulatedArgs);
-        if (parsed.summary) {
-          delta.content = (delta.content || "") + parsed.summary;
+        const text = parsed.summary || parsed.title || "";
+        if (text) {
+          delta.content = (delta.content || "") + text;
         }
       } catch { /* malformed args — no summary */ }
     }
