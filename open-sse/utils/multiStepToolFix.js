@@ -198,3 +198,131 @@ export function rewriteStreamingSentinel(assembledMessage, finishReason) {
     finishReason: remainingTools.length > 0 ? "tool_calls" : "stop",
   };
 }
+
+/**
+ * Create a TransformStream that filters _router_finish sentinel tool calls
+ * from live SSE streams. Strips sentinel tool-call deltas, accumulates the
+ * summary argument, and converts the final finish_reason:tool_calls → stop,
+ * emitting the summary as content delta.
+ *
+ * This is what makes the fix work for streaming passthrough (Pi TUI, etc.).
+ * Without it, the client sees _router_finish as an unknown tool call and
+ * can't properly terminate.
+ *
+ * @returns {TransformStream<Uint8Array, Uint8Array>}
+ */
+export function createSentinelFilterStream() {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = "";
+  let sentinelActive = false;
+  let sentinelIndex = null;
+  let accumulatedArgs = "";
+
+  function processEvent(rawEvent) {
+    // Extract data: payload(s) from SSE event
+    const lines = rawEvent.split("\n");
+    const dataLines = lines.filter((l) => l.trim().startsWith("data:"));
+    // Keep non-data lines (comments, event: etc) as-is
+    const metaLines = lines.filter((l) => !l.trim().startsWith("data:")).join("\n");
+
+    if (dataLines.length === 0) return rawEvent + "\n\n";
+
+    const payload = dataLines.map((l) => l.trim().slice(5).trim()).join("\n");
+
+    if (payload === "[DONE]") return (metaLines ? metaLines + "\n" : "") + "data: [DONE]\n\n";
+
+    let chunk;
+    try {
+      chunk = JSON.parse(payload);
+    } catch {
+      // Not valid JSON — pass through untouched
+      return "data: " + payload + "\n\n";
+    }
+
+    const choice = chunk?.choices?.[0];
+    if (!choice) return "data: " + JSON.stringify(chunk) + "\n\n";
+
+    const delta = choice.delta || {};
+
+    // Detect sentinel tool call by name in any delta
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        if (tc?.function?.name === SENTINEL_TOOL_NAME) {
+          sentinelActive = true;
+          sentinelIndex = tc.index ?? 0;
+        }
+      }
+    }
+
+    if (!sentinelActive) {
+      return "data: " + JSON.stringify(chunk) + "\n\n";
+    }
+
+    // --- Sentinel filtering mode ---
+
+    // Accumulate arguments from sentinel tool call deltas
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        if ((tc?.index ?? 0) === sentinelIndex && tc?.function?.arguments) {
+          accumulatedArgs += tc.function.arguments;
+        }
+      }
+      // Remove all sentinel-index tool calls
+      const filtered = delta.tool_calls.filter(
+        (tc) => (tc?.index ?? 0) !== sentinelIndex
+      );
+      if (filtered.length > 0) {
+        delta.tool_calls = filtered;
+      } else {
+        delete delta.tool_calls;
+      }
+    }
+
+    // Rewrite finish_reason when sentinel was the completion trigger
+    if (choice.finish_reason === "tool_calls") {
+      choice.finish_reason = "stop";
+      // Emit accumulated summary as content
+      try {
+        const parsed = JSON.parse(accumulatedArgs);
+        if (parsed.summary) {
+          delta.content = (delta.content || "") + parsed.summary;
+        }
+      } catch { /* malformed args — no summary */ }
+    }
+
+    // Suppress chunks that are now empty (no content, no reasoning, no tool_calls, no finish)
+    const hasContent = delta.content || delta.reasoning_content;
+    const hasRole = delta.role;
+    const hasTools = Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
+    const hasFinish = choice.finish_reason;
+    if (!hasContent && !hasRole && !hasTools && !hasFinish) {
+      return null; // suppress this event entirely
+    }
+
+    return "data: " + JSON.stringify(chunk) + "\n\n";
+  }
+
+  return new TransformStream({
+    transform(rawChunk, controller) {
+      buffer += decoder.decode(rawChunk, { stream: true });
+
+      // SSE events are separated by \n\n
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const event = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const output = processEvent(event);
+        if (output !== null) controller.enqueue(encoder.encode(output));
+      }
+    },
+    flush(controller) {
+      // Process any remaining buffered data
+      const trimmed = buffer.trim();
+      if (trimmed) {
+        const output = processEvent(trimmed);
+        if (output !== null) controller.enqueue(encoder.encode(output));
+      }
+    },
+  });
+}
