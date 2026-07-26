@@ -308,7 +308,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Multi-step fix: force non-streaming so we can detect premature stops and retry.
   // Pi expects SSE, so we convert JSON → SSE after retries.
+  // MUST update translatedBody.stream too — executor sends body JSON directly to CF,
+  // and stream:true in the body overrides the stream parameter.
   const cfStream = multiStepFixApplied ? false : stream;
+  if (multiStepFixApplied) {
+    translatedBody.stream = false;
+    delete translatedBody.stream_options;
+  }
   // Execute request
   let providerResponse, providerUrl, providerHeaders, finalBody;
   // exception: it is decoded by the executor into OpenAI-compatible output.
