@@ -66,30 +66,10 @@ export function needsMultiStepFix(provider, model) {
  * Handles:
  * 1. Move `content` → `reasoning_content` for assistant messages with tool_calls
  * 2. Strip `reasoning_content` from history (prevents premature stop)
- * 3. Detect name_session ANYWHERE in history → signal that model tried to finish
- *    (router uses this to switch tool_choice from "required" → "auto")
- *
- * @returns {boolean} true if model has called name_session at least once.
+ * 3. Handle Anthropic-style array content blocks
  */
 export function cleanConversationHistory(body) {
-  if (!Array.isArray(body.messages)) return false;
-
-  // Scan entire history for name_session calls.
-  // If model has EVER called name_session, it signaled "I'm done" at some point.
-  // The router will use "auto" to let it stop naturally instead of forcing
-  // more tool calls that result in name_session loops.
-  let modelSignaledCompletion = false;
-  for (const msg of body.messages) {
-    if (msg.role !== "assistant") continue;
-    if (Array.isArray(msg.tool_calls)) {
-      for (const tc of msg.tool_calls) {
-        if (tc?.function?.name === "name_session") {
-          modelSignaledCompletion = true;
-          break;
-        }
-      }
-    }
-  }
+  if (!Array.isArray(body.messages)) return;
 
   for (const msg of body.messages) {
     if (msg.role !== "assistant") continue;
@@ -131,8 +111,6 @@ export function cleanConversationHistory(body) {
       delete msg.reasoning_content;
     }
   }
-
-  return modelSignaledCompletion;
 }
 
 /**
@@ -156,21 +134,20 @@ export function isPrematureStop(responseData) {
 }
 
 /**
- * Inject the sentinel tool and force tool_choice:"required".
+ * Inject the sentinel tool + anti-premature-stop system prompt.
  *
- * kimi-k2.7-code has a 40-60% premature stop rate — it generates reasoning then
- * stops without calling the next tool. Forcing "required" eliminates this.
+ * kimi-k2.7-code has a 40-60% premature stop rate with tool_choice:"auto".
+ * tool_choice:"required" fixes it but causes name_session loops because the
+ * model is forced to call a tool even when done.
  *
- * The model's natural "I'm done" signal is calling name_session. When that
- * happens, cleanConversationHistory strips the exchange and returns true.
- * In that case we use "auto" instead of "required" so the model can generate
- * a proper summary and stop naturally.
+ * New approach: use "auto" + inject a strong system instruction that tells
+ * the model to ALWAYS produce content or tool_calls, never reasoning-only.
+ * The _router_finish tool is available as an explicit exit hatch.
  *
  * @param {object} body - The translated request body.
- * @param {boolean} modelTriedToFinish - True if name_session exchange was stripped.
  * @returns {boolean} true if injection was applied.
  */
-export function injectSentinelTool(body, modelTriedToFinish = false) {
+export function injectSentinelTool(body) {
   if (!Array.isArray(body.tools) || body.tools.length === 0) return false;
 
   // Don't double-inject
@@ -179,16 +156,37 @@ export function injectSentinelTool(body, modelTriedToFinish = false) {
   // Don't override an explicit "none" from the client
   if (body.tool_choice === "none") return false;
 
-  // Always add sentinel as exit hatch
+  // Add sentinel as exit hatch
   body.tools = [...body.tools, SENTINEL_TOOL];
 
-  // If model already tried to finish (name_session stripped from history),
-  // let it stop naturally with "auto". Otherwise force "required" to prevent
-  // the 40-60% premature stop.
-  if (modelTriedToFinish) {
-    body.tool_choice = "auto";
+  // Keep "auto" — let the model decide. We rely on the system prompt below
+  // to prevent premature stops, not on forced tool_choice.
+  // DO NOT set "required" — it causes name_session loops.
+
+  // Inject anti-premature-stop system instruction.
+  // Prepend to existing system message, or create one at position 0.
+  const INSTRUCTION =
+    "\n\n--- ROUTER INSTRUCTION ---\n" +
+    "CRITICAL: You MUST NOT stop after generating only reasoning/thinking. " +
+    "Every response MUST contain either (a) tool_calls to continue working, " +
+    "or (b) visible text content as your reply, or (c) a call to _router_finish. " +
+    "If the task is incomplete, call the next tool. If the task is done, " +
+    "call _router_finish with a summary. NEVER return a response with only " +
+    "reasoning and no output — this will be treated as an error.";
+
+  if (!Array.isArray(body.messages)) return true;
+
+  const firstMsg = body.messages[0];
+  if (firstMsg && firstMsg.role === "system") {
+    // Append to existing system message
+    if (typeof firstMsg.content === "string") {
+      firstMsg.content += INSTRUCTION;
+    } else {
+      firstMsg.content = (firstMsg.content || "") + INSTRUCTION;
+    }
   } else {
-    body.tool_choice = "required";
+    // Insert new system message at the beginning
+    body.messages.unshift({ role: "system", content: INSTRUCTION.trim() });
   }
 
   return true;

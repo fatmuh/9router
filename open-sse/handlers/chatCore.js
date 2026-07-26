@@ -250,11 +250,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // as its escape hatch when done. Pi never sees the sentinel.
   let multiStepFixApplied = false;
   if (!passthrough && needsMultiStepFix(alias || provider, upstreamModel)) {
-    const modelTriedToFinish = cleanConversationHistory(translatedBody);
-    multiStepFixApplied = injectSentinelTool(translatedBody, modelTriedToFinish);
+    cleanConversationHistory(translatedBody);
+    multiStepFixApplied = injectSentinelTool(translatedBody);
     if (multiStepFixApplied) {
-      const mode = modelTriedToFinish ? "auto (name_session detected)" : "required";
-      log?.debug?.("MULTISTEP", `sentinel for ${model} | tool_choice=${mode}`);
+      log?.debug?.("MULTISTEP", `sentinel + system prompt for ${model} | tool_choice=auto`);
     }
   }
 
