@@ -38,23 +38,19 @@ const SENTINEL_TOOL = {
 
 /**
  * Check if a model needs the multi-step tool fix.
- * Only specific CF models that exhibit the premature-stop behavior.
+ *
+ * DISABLED: The sentinel _router_finish approach caused infinite loops — Pi
+ * (and other agents) don't recognize the injected sentinel tool, return an
+ * error, and the model keeps calling tools trying to "finish". The original
+ * "premature stop" bug was actually caused by maxTokens being too low (16384
+ * vs the model's 262K context), not a model behavior issue. Once maxTokens
+ * was fixed, kimi-k2.7-code handles multi-turn tool calling correctly with
+ * tool_choice:"auto" alone.
+ *
+ * Always returns false. Kept for reference / potential future use.
  */
-export function needsMultiStepFix(provider, model) {
-  if (!model || !provider) return false;
-
-  // Only apply when the request includes tools (agentic / function-calling context).
-  // Plain chat requests are never affected.
-
-  // Kimi K2.7 Code on CF Workers — confirmed premature stop in multi-turn tool calling.
-  // GLM-5.2 and Llama on the same CF backend work fine with tool_choice:"auto".
-  const KIMI_PATTERNS = [
-    "kimi-k2.7-code",
-    "kimi-k2.7-code-highspeed",
-  ];
-
-  const baseModel = model.includes("/") ? model.split("/").pop() : model;
-  return KIMI_PATTERNS.some((p) => baseModel === p);
+export function needsMultiStepFix(_provider, _model) {
+  return false;
 }
 
 /**
