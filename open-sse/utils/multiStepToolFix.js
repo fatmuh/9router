@@ -76,25 +76,24 @@ export function cleanConversationHistory(body) {
   let cleaned = 0;
   for (const msg of body.messages) {
     if (msg.role !== "assistant") continue;
-    // Handle both string content and array content (thinking blocks)
     const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
-    
+
+    // Log the actual format we see (for debugging)
+    console.log(`[MULTISTEP] assistant msg: content_type=${typeof msg.content} content_val=${JSON.stringify(msg.content)?.slice(0, 100)} has_tool_calls=${hasToolCalls} keys=${Object.keys(msg).join(",")}`);
+
     if (hasToolCalls && typeof msg.content === "string" && msg.content.length > 0) {
       msg.reasoning_content = (msg.reasoning_content || "") + msg.content;
       msg.content = null;
       cleaned++;
     }
-    
-    // Also handle content as array with thinking blocks + tool_use blocks
+
     if (Array.isArray(msg.content)) {
       const hasToolUse = msg.content.some(b => b?.type === "tool_use");
       if (hasToolUse && !hasToolCalls) {
-        // Pi sends tool_use inside content array, not as tool_calls
-        // Extract tool_use blocks into proper tool_calls
         const toolUses = msg.content.filter(b => b?.type === "tool_use");
         const thinking = msg.content.filter(b => b?.type === "thinking");
         const textParts = msg.content.filter(b => b?.type === "text");
-        
+
         msg.tool_calls = toolUses.map((tu, idx) => ({
           id: tu.id || `call_${idx}`,
           type: "function",
@@ -103,8 +102,7 @@ export function cleanConversationHistory(body) {
             arguments: typeof tu.input === "string" ? tu.input : JSON.stringify(tu.input || {}),
           },
         }));
-        
-        // Move thinking/text → reasoning_content, set content to null
+
         const thinkText = thinking.map(b => b.thinking || "").join("") + textParts.map(b => b.text || "").join("");
         if (thinkText) {
           msg.reasoning_content = (msg.reasoning_content || "") + thinkText;
@@ -114,7 +112,7 @@ export function cleanConversationHistory(body) {
       }
     }
   }
-  
+
   if (cleaned > 0) {
     console.log(`[MULTISTEP] cleanConversationHistory: fixed ${cleaned} assistant message(s)`);
   }
