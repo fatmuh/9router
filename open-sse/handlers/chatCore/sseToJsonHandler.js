@@ -3,6 +3,7 @@ import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
+import { rewriteNonStreamingSentinel } from "../../utils/multiStepToolFix.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
@@ -238,6 +239,15 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
         if (choice?.message?.reasoning_content && choice.message.content) {
           delete choice.message.reasoning_content;
         }
+      }
+    }
+
+    // Multi-step tool fix: rewrite sentinel _router_finish tool call → natural stop
+    if (ctx?.multiStepFixApplied) {
+      const rewritten = rewriteNonStreamingSentinel(parsed);
+      if (rewritten) {
+        Object.assign(parsed, rewritten);
+        log?.debug?.("MULTISTEP", "rewrote _router_finish → natural stop (sseToJson)");
       }
     }
 
