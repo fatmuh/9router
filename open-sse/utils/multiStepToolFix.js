@@ -62,28 +62,28 @@ export function needsMultiStepFix(provider, model) {
 /**
  * Clean conversation history for kimi-k2.7-code.
  *
- * Moves `content` → `reasoning_content` for assistant messages that have
- * tool_calls. Without this, kimi sees the thinking text as a completed
- * response and stops prematurely (finish_reason:"stop" with no tool call).
+ * Two issues handled:
+ * 1. Move `content` → `reasoning_content` for assistant messages with tool_calls
+ * 2. Strip `reasoning_content` from history entirely — kimi sees its own past
+ *    reasoning and sometimes interprets it as a "completed answer", causing
+ *    premature stop. Stripping it forces the model to focus on the tool flow.
  *
  * Mutates `body` in-place.
- *
- * @param {object} body - The translated request body (OpenAI-compatible shape).
  */
 export function cleanConversationHistory(body) {
   if (!Array.isArray(body.messages)) return;
 
-  let cleaned = 0;
   for (const msg of body.messages) {
     if (msg.role !== "assistant") continue;
     const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
 
+    // Move string content → reasoning_content when tool_calls present
     if (hasToolCalls && typeof msg.content === "string" && msg.content.length > 0) {
       msg.reasoning_content = (msg.reasoning_content || "") + msg.content;
       msg.content = null;
-      cleaned++;
     }
 
+    // Handle Anthropic-style array content (thinking + tool_use blocks)
     if (Array.isArray(msg.content)) {
       const hasToolUse = msg.content.some(b => b?.type === "tool_use");
       if (hasToolUse && !hasToolCalls) {
@@ -105,23 +105,47 @@ export function cleanConversationHistory(body) {
           msg.reasoning_content = (msg.reasoning_content || "") + thinkText;
         }
         msg.content = null;
-        cleaned++;
       }
+    }
+
+    // Strip reasoning_content from ALL assistant messages in history.
+    // Kimi is flaky (3/5 times it premature-stops). Removing past reasoning
+    // from context reduces the chance the model interprets it as a final answer.
+    if (hasToolCalls && msg.reasoning_content) {
+      delete msg.reasoning_content;
     }
   }
 }
 
 /**
- * Inject the sentinel tool for multi-step tool calling.
+ * Detect a premature stop: model returned finish_reason:"stop" with only
+ * reasoning (no content, no tool_calls). This is the known flaky behavior
+ * of kimi-k2.7-code on CF.
  *
- * IMPORTANT: We do NOT force tool_choice:"required". Forcing "required" causes
- * infinite tool-call loops — the model can't output a text-only final response,
- * so it keeps calling filler tools (name_session, biome_check, etc.) forever.
+ * @param {object} responseData - Parsed JSON response from provider.
+ * @returns {boolean}
+ */
+export function isPrematureStop(responseData) {
+  if (!responseData?.choices?.[0]) return false;
+  const choice = responseData.choices[0];
+  if (choice.finish_reason !== "stop") return false;
+  const msg = choice.message || {};
+  const hasContent = typeof msg.content === "string" && msg.content.length > 0;
+  const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+  const hasReasoning = typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0;
+  // Premature = reasoning only, no actual output
+  return hasReasoning && !hasContent && !hasToolCalls;
+}
+
+/**
+ * Inject the sentinel tool and force tool_choice:"required".
  *
- * Instead we keep tool_choice at whatever the client set (usually "auto") and
- * inject the sentinel tool with a very explicit description. If the model calls
- * _router_finish → we rewrite it to a clean stop. If the model stops naturally
- * with text → that's fine too, the response passes through unchanged.
+ * kimi-k2.7-code has a 40-60% premature stop rate with tool_choice:"auto" —
+ * it generates reasoning then stops without calling a tool. Forcing "required"
+ * eliminates this: model ALWAYS calls a tool. The sentinel `_router_finish`
+ * gives it an escape hatch when the task is complete. The streaming filter
+ * (createSentinelFilterStream) and non-streaming rewriter convert
+ * _router_finish calls to normal stops before they reach the client.
  *
  * Mutates `body` in-place. Only acts when tools are already present.
  *
@@ -138,7 +162,7 @@ export function injectSentinelTool(body) {
   if (body.tool_choice === "none") return false;
 
   body.tools = [...body.tools, SENTINEL_TOOL];
-  // Keep existing tool_choice (usually "auto"). Do NOT force "required".
+  body.tool_choice = "required";
 
   return true;
 }
