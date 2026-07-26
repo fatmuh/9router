@@ -66,32 +66,29 @@ export function needsMultiStepFix(provider, model) {
  * Handles:
  * 1. Move `content` → `reasoning_content` for assistant messages with tool_calls
  * 2. Strip `reasoning_content` from history (prevents premature stop)
- * 3. Detect trailing name_session exchange → strip it (model tried to finish
- *    via name_session because tool_choice:required forced a tool call)
+ * 3. Detect name_session ANYWHERE in history → signal that model tried to finish
+ *    (router uses this to switch tool_choice from "required" → "auto")
  *
- * @returns {boolean} true if a completion signal (name_session) was stripped.
+ * @returns {boolean} true if model has called name_session at least once.
  */
 export function cleanConversationHistory(body) {
   if (!Array.isArray(body.messages)) return false;
 
-  // Detect trailing name_session exchange and strip it.
-  // Pattern: [..., assistant(name_session only), tool(name_session result)]
-  // The model called name_session because tool_choice:required forced it to.
-  // Strip the exchange so model sees clean history ending with real work.
-  let strippedCompletion = false;
-  const msgs = body.messages;
-  while (msgs.length >= 2) {
-    const last = msgs[msgs.length - 1];
-    const prev = msgs[msgs.length - 2];
-    const isNameSessionExchange =
-      last?.role === "tool" &&
-      prev?.role === "assistant" &&
-      Array.isArray(prev.tool_calls) &&
-      prev.tool_calls.length > 0 &&
-      prev.tool_calls.every(tc => tc?.function?.name === "name_session");
-    if (!isNameSessionExchange) break;
-    msgs.splice(msgs.length - 2, 2);
-    strippedCompletion = true;
+  // Scan entire history for name_session calls.
+  // If model has EVER called name_session, it signaled "I'm done" at some point.
+  // The router will use "auto" to let it stop naturally instead of forcing
+  // more tool calls that result in name_session loops.
+  let modelSignaledCompletion = false;
+  for (const msg of body.messages) {
+    if (msg.role !== "assistant") continue;
+    if (Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if (tc?.function?.name === "name_session") {
+          modelSignaledCompletion = true;
+          break;
+        }
+      }
+    }
   }
 
   for (const msg of body.messages) {
@@ -135,7 +132,7 @@ export function cleanConversationHistory(body) {
     }
   }
 
-  return strippedCompletion;
+  return modelSignaledCompletion;
 }
 
 /**

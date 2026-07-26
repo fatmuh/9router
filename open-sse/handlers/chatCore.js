@@ -253,7 +253,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     const modelTriedToFinish = cleanConversationHistory(translatedBody);
     multiStepFixApplied = injectSentinelTool(translatedBody, modelTriedToFinish);
     if (multiStepFixApplied) {
-      const mode = modelTriedToFinish ? "auto (name_session stripped)" : "required";
+      const mode = modelTriedToFinish ? "auto (name_session detected)" : "required";
       log?.debug?.("MULTISTEP", `sentinel for ${model} | tool_choice=${mode}`);
     }
   }
