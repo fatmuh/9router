@@ -20,7 +20,6 @@ import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
-import { needsMultiStepFix, cleanConversationHistory, injectSentinelTool, rewriteNonStreamingSentinel, rewriteStreamingSentinel } from "../utils/multiStepToolFix.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { injectPonytail } from "../rtk/ponytail.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";
@@ -241,22 +240,6 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   if (xf.length && log?.line) log.line(reqTag, "⚙", xf.join(" · "));
 
-  // Multi-step tool fix for kimi-k2.7-code on CF.
-  // The model is flaky (40-60% premature stop rate after tool results).
-  // Fix: 1) clean history (strip reasoning from assistant messages with tool_calls)
-  //      2) inject _router_finish sentinel + force tool_choice:"required"
-  //      3) streaming/non-streaming filters convert _router_finish → normal stop
-  // Result: model ALWAYS calls a tool (no premature stop), and uses _router_finish
-  // as its escape hatch when done. Pi never sees the sentinel.
-  let multiStepFixApplied = false;
-  if (!passthrough && needsMultiStepFix(alias || provider, upstreamModel)) {
-    cleanConversationHistory(translatedBody);
-    multiStepFixApplied = injectSentinelTool(translatedBody);
-    if (multiStepFixApplied) {
-      log?.debug?.("MULTISTEP", `sentinel + tool_choice:required for ${model}`);
-    }
-  }
-
   const executor = getExecutor(provider);
   trackPendingRequest(model, provider, connectionId, true);
   appendRequestLog({ model, provider, connectionId, status: "PENDING" }).catch(() => { });
@@ -395,7 +378,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, multiStepFixApplied };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 

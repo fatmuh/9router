@@ -3,7 +3,6 @@ import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
-import { rewriteNonStreamingSentinel } from "../../utils/multiStepToolFix.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
@@ -109,7 +108,7 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, trackDone, appendLog, reqTag, log, multiStepFixApplied }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, trackDone, appendLog, reqTag, log }) {
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
@@ -119,8 +118,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
   const ctx = {
     provider, model, connectionId,
     request: extractRequestConfig(body, stream),
-    providerRequest: finalBody || translatedBody || null,
-    multiStepFixApplied
+    providerRequest: finalBody || translatedBody || null
   };
 
   // Codex/Responses API SSE path
@@ -240,15 +238,6 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
         if (choice?.message?.reasoning_content && choice.message.content) {
           delete choice.message.reasoning_content;
         }
-      }
-    }
-
-    // Multi-step tool fix: rewrite sentinel _router_finish tool call → natural stop
-    if (ctx?.multiStepFixApplied) {
-      const rewritten = rewriteNonStreamingSentinel(parsed);
-      if (rewritten) {
-        Object.assign(parsed, rewritten);
-        log?.debug?.("MULTISTEP", "rewrote _router_finish → natural stop (sseToJson)");
       }
     }
 
