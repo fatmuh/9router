@@ -27,6 +27,7 @@ import WindsurfExecutor from "./windsurf.js";
 import { DefaultExecutor } from "./default.js";
 import { DevinCliExecutor } from "./devin-cli.js";
 import { AgentRouterExecutor } from "./agentrouter.js";
+import { FreebuffExecutor } from "./freebuff.js";
 
 const executors = {
   antigravity: new AntigravityExecutor(),
@@ -62,6 +63,7 @@ const executors = {
   windsurf: new WindsurfExecutor(),
   "devin-cli": new DevinCliExecutor(),
   agentrouter: new AgentRouterExecutor(),
+  freebuff: new FreebuffExecutor(),
 };
 
 const defaultCache = new Map();

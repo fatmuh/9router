@@ -117,6 +117,7 @@ import p113 from "./morph.js";
 // import p104 from "./windsurf.js";
 import p115 from "./poolside.js";
 import p116 from "./agentrouter.js";
+import p117 from "./freebuff.js";
 
 export default [
   p0,
@@ -235,4 +236,5 @@ export default [
   // p104, // windsurf — hidden, no tool calling
   p115,
   p116,
+  p117,
 ];
