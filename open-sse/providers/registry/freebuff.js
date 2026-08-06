@@ -25,9 +25,9 @@ export default {
     },
   },
   category: "freeTier",
-  authType: "oauth",
+  authType: "apikey",
   hasOAuth: false, // token from CLI, no dashboard OAuth flow
-  authModes: ["oauth"],
+  authModes: ["apikey"],
   serviceKinds: ["llm"],
   transport: {
     baseUrl: "https://www.codebuff.com/api/v1/chat/completions",

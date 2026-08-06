@@ -332,9 +332,9 @@ export class FreebuffExecutor extends BaseExecutor {
   }
 
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
-    const token = credentials?.accessToken;
+    const token = credentials?.apiKey || credentials?.accessToken;
     if (!token) {
-      throw Object.assign(new Error("Freebuff: missing accessToken"), { status: 401 });
+      throw Object.assign(new Error("Freebuff: missing apiKey/accessToken"), { status: 401 });
     }
 
     const upstreamModel = body.model || model;
