@@ -173,8 +173,8 @@ function AccountsTable({ accounts }) {
               <th className="px-3 py-2.5 text-right font-semibold text-text-muted">Sessions</th>
               <th className="px-3 py-2.5 text-right font-semibold text-text-muted">Requests</th>
               <th className="px-3 py-2.5 text-right font-semibold text-text-muted">Tokens (↑/↓)</th>
-              <th className="px-3 py-2.5 text-center font-semibold text-text-muted">Rate Limit</th>
-              <th className="px-3 py-2.5 text-center font-semibold text-text-muted">Resets In</th>
+              <th className="px-3 py-2.5 text-center font-semibold text-text-muted">Sessions</th>
+              <th className="px-3 py-2.5 text-center font-semibold text-text-muted">Session TTL</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/50">
@@ -184,9 +184,6 @@ function AccountsTable({ accounts }) {
               const isActive = a.account_status === "active" || a.account_status === "streaming";
               const statusColor = isBanned ? "bg-red-500" : isPaused ? "bg-amber-500" : isActive ? "bg-green-500" : "bg-gray-400";
               const statusText = isBanned ? (a.ban_reason || "banned") : isPaused ? "paused" : a.account_status || "idle";
-
-              const rl = a.rate_limit || a.rate_limits_by_model?.[a.session_model];
-              const resetLabel = <CountdownCell resetAt={a.quota_reset_at || rl?.resetAt} />;
 
               return (
                 <tr key={a.id} className="hover:bg-bg-subtle transition-colors">
@@ -208,11 +205,16 @@ function AccountsTable({ accounts }) {
                     <span className="text-text-muted"> / </span>
                     <span className="text-success">{fmt(a.local_usage?.tokens_out)}</span>
                   </td>
-                  <td className="px-3 py-2 text-center text-xs text-text-muted">
-                    {rl ? `${rl.recentCount || 0}/${rl.limit || 6}` : "—"}
+                  <td className="px-3 py-2 text-center text-xs">
+                    {(() => {
+                      const used = a.total_sessions || 0;
+                      const limit = 6;
+                      const color = used >= limit ? "text-red-500" : used >= limit - 1 ? "text-amber-500" : "text-text-muted";
+                      return <span className={color}>{used}/{limit}</span>;
+                    })()}
                   </td>
                   <td className="px-3 py-2 text-center text-xs">
-                    {resetLabel}
+                    <CountdownCell resetAt={a.session_expires_at} useRemainingMs={a.session_remaining_ms} />
                   </td>
                 </tr>
               );
@@ -224,10 +226,15 @@ function AccountsTable({ accounts }) {
   );
 }
 
-function CountdownCell({ resetAt }) {
-  const label = useCountdown(resetAt);
-  if (!resetAt) return <span className="text-text-muted">—</span>;
-  return <span className="text-amber-500 font-medium">{label}</span>;
+function CountdownCell({ resetAt, useRemainingMs }) {
+  // If we have remainingMs, compute expiry from now + remainingMs
+  const expiryTs = resetAt || (useRemainingMs ? Date.now() + useRemainingMs : null);
+  const label = useCountdown(expiryTs);
+  if (!expiryTs) return <span className="text-text-muted">—</span>;
+  // Green if more than 15 min, amber if 5-15, red if < 5
+  const diff = new Date(expiryTs).getTime() - Date.now();
+  const color = diff > 900000 ? "text-green-500" : diff > 300000 ? "text-amber-500" : "text-red-500";
+  return <span className={`${color} font-medium`}>{label}</span>;
 }
 
 function ModelGroups({ byModel }) {
