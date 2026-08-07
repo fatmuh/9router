@@ -23,7 +23,7 @@ export default {
   authModes: ["apikey"],
   serviceKinds: ["llm"],
   transport: {
-    baseUrl: "https://freebuff.patchfly.dev/v1/chat/completions",
+    baseUrl: "http://environtment-proxy-freebuff-dylvrt:9187/v1/chat/completions",
     format: "openai",
     headers: {},
     retry: {
