@@ -181,12 +181,15 @@ export async function getQuotaStatus(userId = null) {
   for (const user of list) {
     // Include users WITHOUT a quota too (shown as "unlimited" in the UI).
     if (!user.limitTokens || !user.limitWindowMs) {
+      // Still calculate real usage (last 24h) so the UI shows it.
+      const since24h = new Date(Date.now() - 86400000).toISOString();
+      const usedTokens = await getTokenUsageByUserSince(user.id, since24h);
       out.push({
         userId: user.id,
         username: user.username,
         isUnlimited: true,
         limitTokens: null,
-        usedTokens: 0,
+        usedTokens,
         remainingTokens: null,
         windowStart: null,
         resetAt: null,
