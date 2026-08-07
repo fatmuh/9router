@@ -23,7 +23,7 @@ export default {
   authModes: ["apikey"],
   serviceKinds: ["llm"],
   transport: {
-    baseUrl: "https://freebuff.moccilabs.com/v1/chat/completions",
+    baseUrl: "https://freebuff.patchfly.dev/v1/chat/completions",
     format: "openai",
     headers: {},
     retry: {
