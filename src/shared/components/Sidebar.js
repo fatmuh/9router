@@ -25,6 +25,7 @@ const navItems = [
   { href: "/dashboard/combos", label: "Combos", icon: "layers", perm: "combos.manage" },
   { href: "/dashboard/usage", label: "Usage", icon: "bar_chart", perm: "usage.view" },
   { href: "/dashboard/token-quota", label: "Token Quota", icon: "speed", perm: "quota.view.own" },
+  { href: "/dashboard/freebuff", label: "Freebuff", icon: "bolt", perm: "usage.view" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage", perm: "quota.tracker" },
   { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings", perm: "settings.manage" },
   // { href: "/dashboard/pxpipe", label: "PXPIPE", icon: "image" },
