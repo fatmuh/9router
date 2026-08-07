@@ -11,7 +11,7 @@ const PROXY_KEY = process.env.FREEBUFF_PROXY_KEY || "moccilabs-freebuff-2026";
 export async function GET(request) {
   const ctx = await getAuthContext(request);
   if (!ctx) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!hasPermission(ctx, "usage.view")) {
+  if (!hasPermission(ctx, "freebuff.view")) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
