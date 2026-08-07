@@ -32,6 +32,7 @@ const PERIODS = [
 export default function TokenQuotaPage() {
   const [data, setData] = useState(null);
   const [quotaData, setQuotaData] = useState(null);
+  const [allQuotas, setAllQuotas] = useState(null);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -40,12 +41,17 @@ export default function TokenQuotaPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, quotaRes] = await Promise.all([
+      const [statsRes, quotaRes, allQuotaRes] = await Promise.all([
         fetch(`/api/usage/stats?period=${period}`),
         fetch("/api/usage/quota"),
+        fetch("/api/usage/quota/all").catch(() => null),
       ]);
       if (statsRes.ok) setData(await statsRes.json());
       if (quotaRes.ok) setQuotaData(await quotaRes.json());
+      if (allQuotaRes && allQuotaRes.ok) {
+        const aq = await allQuotaRes.json();
+        setAllQuotas(aq.statuses || []);
+      }
     } catch {}
     setLoading(false);
     setLastUpdated(new Date());
@@ -112,6 +118,7 @@ export default function TokenQuotaPage() {
             { value: "accounts", label: "By Account" },
             { value: "providers", label: "By Provider" },
             { value: "models", label: "By Model" },
+            { value: "userlimits", label: "User Limits" },
           ]}
           value={tab}
           onChange={setTab}
@@ -163,6 +170,7 @@ export default function TokenQuotaPage() {
       {tab === "accounts" && <AccountTable stats={stats} />}
       {tab === "providers" && <ProviderTable stats={stats} />}
       {tab === "models" && <ModelTable stats={stats} />}
+      {tab === "userlimits" && <UserQuotaTable quotas={allQuotas} />}
     </div>
   );
 }
@@ -334,6 +342,98 @@ function EmptyState({ icon, text }) {
     <Card className="p-12 text-center text-text-muted">
       <span className="material-symbols-outlined text-[40px] text-text-muted/50">{icon}</span>
       <p className="mt-2">{text}</p>
+    </Card>
+  );
+}
+
+function UserQuotaTable({ quotas }) {
+  if (!quotas || !quotas.length) {
+    return <EmptyState icon="group" text="No users with token limits found." />;
+  }
+
+  // Show ALL users (unlimited + limited). Sort: limited first (by usage % desc), then unlimited.
+  const sorted = [...quotas].sort((a, b) => {
+    if (a.isUnlimited && !b.isUnlimited) return 1;
+    if (!a.isUnlimited && b.isUnlimited) return -1;
+    return (b.percentFull || 0) - (a.percentFull || 0);
+  });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 sm:gap-4">
+        {sorted.map((u) => (
+          <UserQuotaCard key={u.userId} u={u} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UserQuotaCard({ u }) {
+  const resetLabel = useCountdown(u.resetAt);
+  const pct = u.percentFull || 0;
+  const barColor = u.isFull ? "bg-red-500" : u.isNearFull ? "bg-amber-500" : pct > 50 ? "bg-blue-500" : "bg-green-500";
+  const textColor = u.isFull ? "text-red-500" : u.isNearFull ? "text-amber-500" : pct > 50 ? "text-blue-500" : "text-green-500";
+
+  if (u.isUnlimited) {
+    return (
+      <Card className="flex flex-col gap-2 px-4 py-3">
+        <div className="flex items-center justify-between">
+          <span className="font-semibold text-text-main truncate">{u.username || "Unknown"}</span>
+          <span className="material-symbols-outlined text-[18px] text-green-500">all_inclusive</span>
+        </div>
+        <span className="text-xs text-text-muted">No token limit set (unlimited)</span>
+        <div className="flex items-center gap-2 mt-1">
+          <span className="text-sm tabular-nums text-text-muted">{fmt(u.usedTokens)} tokens used</span>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="flex flex-col gap-2 px-4 py-3">
+      {/* User header */}
+      <div className="flex items-center justify-between">
+        <span className="font-semibold text-text-main truncate">{u.username || "Unknown"}</span>
+        {u.isFull && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-500 font-bold uppercase">Exhausted</span>
+        )}
+        {u.isNearFull && !u.isFull && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-500 font-bold uppercase">Near Limit</span>
+        )}
+      </div>
+
+      {/* Limit + remaining */}
+      <div className="flex items-baseline justify-between">
+        <span className={`text-2xl font-bold tabular-nums ${textColor}`}>{fmt(u.usedTokens)}</span>
+        <span className="text-sm text-text-muted">/ {fmt(u.limitTokens)}</span>
+      </div>
+
+      {/* Progress bar */}
+      <div className="h-2.5 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden">
+        <div className={`h-full ${barColor} rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
+      </div>
+
+      {/* Bottom row: remaining + reset */}
+      <div className="flex items-center justify-between text-xs text-text-muted mt-0.5">
+        <span className={u.remainingTokens > 0 ? "" : "text-red-500"}>
+          {fmt(u.remainingTokens)} remaining
+        </span>
+        <span className="flex items-center gap-1">
+          {u.notStarted ? (
+            <><span className="material-symbols-outlined text-[12px]">play_circle</span> Not started</>
+          ) : (
+            <><span className="material-symbols-outlined text-[12px]">timer</span> {resetLabel || "—"}</>
+          )}
+        </span>
+      </div>
+
+      {/* Window label */}
+      {u.windowLabel && (
+        <div className="text-[10px] text-text-muted border-t border-border/50 pt-1 mt-0.5">
+          {u.windowLabel} window{u.resetAt && !u.notStarted ? ` · resets ${new Date(u.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+        </div>
+      )}
     </Card>
   );
 }
