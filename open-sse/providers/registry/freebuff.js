@@ -1,12 +1,6 @@
 // Freebuff — free coding agent by Codebuff (codebuff.com).
-// Free-tier models (MiniMax M2.7/M3, DeepSeek V4, MiMo 2.5, etc.) accessible
-// via auth token from `npm i -g freebuff && freebuff` CLI login.
-// Token stored at ~/.config/manicode/credentials.json → default.authToken.
-//
-// Custom executor (executors/freebuff.js) handles:
-//  - Agent run lifecycle (POST /api/v1/agent-runs → START/FINISH)
-//  - Free session management (POST/GET/DELETE /api/v1/freebuff/session)
-//  - Metadata injection ({ run_id, cost_mode:"free", client_id, freebuff_instance_id })
+// Uses self-hosted freebuff-proxy (OpenAI-compatible) that handles
+// CLI fingerprint spoofing, session management, and 22-account pooling.
 
 export default {
   id: "freebuff",
@@ -20,21 +14,18 @@ export default {
     website: "https://freebuff.com",
     notice: {
       signupUrl: "https://freebuff.com/login",
-      apiHint:
-        'Run `npm i -g freebuff && freebuff` to login, then paste the authToken from ~/.config/manicode/credentials.json',
+      apiHint: 'Proxy API key (default: moccilabs-freebuff-2026)',
     },
   },
   category: "freeTier",
   authType: "apikey",
-  hasOAuth: false, // token from CLI, no dashboard OAuth flow
+  hasOAuth: false,
   authModes: ["apikey"],
   serviceKinds: ["llm"],
   transport: {
-    baseUrl: "https://www.codebuff.com/api/v1/chat/completions",
+    baseUrl: "https://freebuff.moccilabs.com/v1/chat/completions",
     format: "openai",
-    headers: {
-      "User-Agent": "Freebuff-CLI/0.0.96",
-    },
+    headers: {},
     retry: {
       429: { attempts: 2, delayMs: 3000 },
       502: { attempts: 2, delayMs: 1000 },
@@ -42,9 +33,9 @@ export default {
     },
   },
   models: [
+    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", upstreamModelId: "deepseek/deepseek-v4-flash" },
     { id: "minimax-m2.7", name: "MiniMax M2.7", upstreamModelId: "minimax/minimax-m2.7" },
     { id: "minimax-m3", name: "MiniMax M3", upstreamModelId: "minimax/minimax-m3" },
-    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", upstreamModelId: "deepseek/deepseek-v4-flash" },
     { id: "mimo-v2.5", name: "MiMo 2.5", upstreamModelId: "mimo/mimo-v2.5" },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", upstreamModelId: "deepseek/deepseek-v4-pro" },
     { id: "mimo-v2.5-pro", name: "MiMo 2.5 Pro", upstreamModelId: "mimo/mimo-v2.5-pro" },
