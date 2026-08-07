@@ -483,12 +483,31 @@ export function createSSEStream(options = {}) {
           // streaming chunks here before emitting [DONE].
           if (buffer && buffer.trim().startsWith("{")) {
             let maybe = null;
-            try { maybe = tryParseLeadingJson(buffer.trim()); } catch { maybe = null; }
-            if (!maybe) {
-              try { maybe = JSON.parse(buffer.trim()); } catch { maybe = null; }
-            }
+            try { maybe = JSON.parse(buffer.trim()); } catch { maybe = null; }
             if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
-              const chunks = nonStreamingCompletionToChunks(maybe, model);
+              // Inline nonStreamingCompletionToChunks to avoid bundler scope issues
+              const obj = maybe;
+              const cid = obj.id || `chatcmpl-${Date.now().toString(36)}`;
+              const ccreated = obj.created || Math.floor(Date.now() / 1000);
+              const cmdl = obj.model || model || "unknown";
+              const cchoice = obj.choices?.[0] || {};
+              const cmsg = cchoice.message || {};
+              const cbase = { id: cid, object: "chat.completion.chunk", created: ccreated, model: cmdl };
+              const chunks = [
+                { ...cbase, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null, logprobs: null }] },
+              ];
+              if (cmsg.reasoning_content) {
+                chunks.push({ ...cbase, choices: [{ index: 0, delta: { reasoning_content: cmsg.reasoning_content }, finish_reason: null, logprobs: null }] });
+              }
+              if (cmsg.content) {
+                chunks.push({ ...cbase, choices: [{ index: 0, delta: { content: cmsg.content }, finish_reason: null, logprobs: null }] });
+              }
+              if (Array.isArray(cmsg.tool_calls) && cmsg.tool_calls.length > 0) {
+                chunks.push({ ...cbase, choices: [{ index: 0, delta: { tool_calls: cmsg.tool_calls }, finish_reason: null, logprobs: null }] });
+              }
+              const finishChunk = { ...cbase, choices: [{ index: 0, delta: {}, finish_reason: cchoice.finish_reason || "stop", logprobs: null }] };
+              if (obj.usage) finishChunk.usage = obj.usage;
+              chunks.push(finishChunk);
               for (const c of chunks) {
                 const out = `data: ${JSON.stringify(c)}\n\n`;
                 reqLogger?.appendConvertedChunk?.(out);
