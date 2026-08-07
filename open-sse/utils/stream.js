@@ -482,7 +482,11 @@ export function createSSEStream(options = {}) {
           // transform loop (it stays buffered until flush), so convert it to proper
           // streaming chunks here before emitting [DONE].
           if (buffer && buffer.trim().startsWith("{")) {
-            const maybe = tryParseLeadingJson(buffer.trim());
+            let maybe = null;
+            try { maybe = tryParseLeadingJson(buffer.trim()); } catch { maybe = null; }
+            if (!maybe) {
+              try { maybe = JSON.parse(buffer.trim()); } catch { maybe = null; }
+            }
             if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
               const chunks = nonStreamingCompletionToChunks(maybe, model);
               for (const c of chunks) {
