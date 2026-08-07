@@ -34,11 +34,12 @@ export default {
   },
   models: [
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", upstreamModelId: "deepseek/deepseek-v4-flash" },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", upstreamModelId: "deepseek/deepseek-v4-pro" },
+    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", upstreamModelId: "moonshotai/kimi-k2.7-code" },
+    { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "moonshotai/kimi-k2.6" },
     { id: "minimax-m2.7", name: "MiniMax M2.7", upstreamModelId: "minimax/minimax-m2.7" },
     { id: "minimax-m3", name: "MiniMax M3", upstreamModelId: "minimax/minimax-m3" },
     { id: "mimo-v2.5", name: "MiMo 2.5", upstreamModelId: "mimo/mimo-v2.5" },
-    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", upstreamModelId: "deepseek/deepseek-v4-pro" },
     { id: "mimo-v2.5-pro", name: "MiMo 2.5 Pro", upstreamModelId: "mimo/mimo-v2.5-pro" },
-    { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "moonshotai/kimi-k2.6" },
   ],
 };
