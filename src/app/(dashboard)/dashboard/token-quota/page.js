@@ -161,10 +161,8 @@ export default function TokenQuotaPage() {
         ))}
       </div>
 
-      {/* Token quota status (if user has a limit set) */}
-      {quotaData?.status && !quotaData.status.isUnlimited && (
-        <QuotaSection u={quotaData.status} />
-      )}
+      {/* Logged-in user's own quota — always visible */}
+      {quotaData?.status && <QuotaSection u={quotaData.status} />}
 
       {/* Tab content */}
       {tab === "accounts" && <AccountTable stats={stats} />}
@@ -180,10 +178,40 @@ function QuotaSection({ u }) {
   const pct = u.percentFull || 0;
   const barColor = u.isFull ? "bg-red-500" : u.isNearFull ? "bg-amber-500" : pct > 50 ? "bg-blue-500" : "bg-green-500";
 
+  // Unlimited user (super admin / no limit set)
+  if (u.isUnlimited) {
+    return (
+      <Card className="px-5 py-4 flex items-center gap-4">
+        <div className="w-11 h-11 rounded-full bg-green-500/10 text-green-500 flex items-center justify-center shrink-0">
+          <span className="material-symbols-outlined text-[24px]">all_inclusive</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-text-main">Your Token Quota</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-500 font-bold uppercase">Unlimited</span>
+          </div>
+          <p className="text-sm text-text-muted mt-0.5">You have no token limit. All your API keys work without restriction.</p>
+        </div>
+        <div className="text-right shrink-0">
+          <span className="text-lg font-bold tabular-nums text-text-muted">{fmt(u.usedTokens)}</span>
+          <span className="text-xs text-text-muted block">tokens used</span>
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card className="px-5 py-4 flex flex-col gap-2">
       <div className="flex items-center justify-between text-sm">
-        <span className="font-semibold text-text-main">Your Token Quota</span>
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-text-main">Your Token Quota</span>
+          {u.isFull && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-500 font-bold uppercase">Exhausted</span>
+          )}
+          {u.isNearFull && !u.isFull && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-500 font-bold uppercase">Near Limit</span>
+          )}
+        </div>
         <span className="text-text-muted">
           {fmt(u.usedTokens)} / {fmt(u.limitTokens)} tokens
         </span>
@@ -192,9 +220,20 @@ function QuotaSection({ u }) {
         <div className={`h-full ${barColor} rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
       </div>
       <div className="flex justify-between text-xs text-text-muted">
-        <span>{fmt(u.remainingTokens)} remaining</span>
-        <span>Resets in {u.notStarted ? "—" : resetLabel || "—"}</span>
+        <span className={u.remainingTokens > 0 ? "" : "text-red-500"}>{fmt(u.remainingTokens)} remaining</span>
+        <span className="flex items-center gap-1">
+          {u.notStarted ? (
+            <><span className="material-symbols-outlined text-[12px]">play_circle</span> Window starts on first request</>
+          ) : (
+            <><span className="material-symbols-outlined text-[12px]">timer</span> Resets in {resetLabel || "—"}</>
+          )}
+        </span>
       </div>
+      {u.windowLabel && (
+        <div className="text-[10px] text-text-muted border-t border-border/50 pt-1">
+          {u.windowLabel} window{u.resetAt && !u.notStarted ? ` · resets ${new Date(u.resetAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}
+        </div>
+      )}
     </Card>
   );
 }
