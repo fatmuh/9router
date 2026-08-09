@@ -788,22 +788,6 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         );
         return { valid: exRes.ok, error: exRes.ok ? null : "Invalid Personal Access Token" };
       }
-      case "freebuff": {
-        // Freebuff uses self-hosted proxy. Test by hitting proxy /v1/models.
-        const fbProxyBase = process.env.FREEBUFF_PROXY_URL || "http://environtment-proxy-freebuff-dylvrt:9187";
-        const fbProxyKey = process.env.FREEBUFF_PROXY_KEY || connection.apiKey;
-        const res = await fetch(`${fbProxyBase}/v1/models`, {
-          headers: { Authorization: `Bearer ${fbProxyKey}` },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (res.ok) {
-          const data = await res.json().catch(() => null);
-          const modelCount = data?.data?.length || 0;
-          return { valid: true, error: null, warning: modelCount > 0 ? `${modelCount} models available` : null };
-        }
-        const valid = res.status !== 401 && res.status !== 403;
-        return { valid, error: valid ? `Proxy responded ${res.status}` : "Invalid proxy key" };
-      }
       default:
         return { valid: false, error: "Provider test not supported" };
     }

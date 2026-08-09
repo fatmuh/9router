@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -229,6 +229,21 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_al_ts ON auditLog(timestamp DESC)",
       "CREATE INDEX IF NOT EXISTS idx_al_actor ON auditLog(actorUserId)",
       "CREATE INDEX IF NOT EXISTS idx_al_action ON auditLog(action)",
+    ],
+  },
+  proxyPoolFitness: {
+    columns: {
+      poolId: "TEXT NOT NULL",
+      scope: "TEXT NOT NULL",
+      until: "REAL NOT NULL",
+      reason: "TEXT DEFAULT ''",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    primaryKey: "PRIMARY KEY (poolId, scope)",
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ppf_pool ON proxyPoolFitness(poolId)",
+      "CREATE INDEX IF NOT EXISTS idx_ppf_scope ON proxyPoolFitness(scope)",
     ],
   },
 };

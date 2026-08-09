@@ -222,7 +222,6 @@ const DASHBOARD_PAGE_PERMS = {
   "/dashboard/combos": "combos.manage",
   "/dashboard/usage": "usage.view",
   "/dashboard/token-quota": "quota.view.own",
-  "/dashboard/freebuff": "freebuff.view",
   "/dashboard/quota": "quota.tracker",
   "/dashboard/token-saver": "settings.manage",
   "/dashboard/cli-tools": "cli.tools",

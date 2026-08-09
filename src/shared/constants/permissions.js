@@ -26,13 +26,6 @@ export const PERMISSION_CATALOG = [
     ],
   },
   {
-    group: "freebuff",
-    label: "Freebuff",
-    permissions: [
-      { key: "freebuff.view", label: "View Freebuff", desc: "See Freebuff pool dashboard (accounts, sessions, usage)" },
-    ],
-  },
-  {
     group: "keys",
     label: "API Keys",
     permissions: [

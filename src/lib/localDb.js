@@ -10,6 +10,7 @@ export {
   createProviderNode, updateProviderNode, deleteProviderNode,
   getProxyPools, getProxyPoolById,
   createProxyPool, updateProxyPool, deleteProxyPool,
+  listProxyPoolFitness, upsertProxyPoolFitness, deleteProxyPoolFitness, clearProxyPoolFitness, deleteProxyPoolFitnessByPool,
   getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey, touchApiKeyLastUsed, claimLegacyKeys, getQuotaStatus,
   getRecentRequestsByUser, getUsageByUserSince,
   getRoles, getRoleById, getRoleByName, ensureSystemAdminRole, createRole, updateRole, deleteRole,

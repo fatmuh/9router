@@ -29,6 +29,12 @@ export {
   createProxyPool, updateProxyPool, deleteProxyPool,
 } from "./repos/proxyPoolsRepo.js";
 
+// Proxy pool fitness (circuit breaker for proxy pools)
+export {
+  listProxyPoolFitness, upsertProxyPoolFitness,
+  deleteProxyPoolFitness, clearProxyPoolFitness, deleteProxyPoolFitnessByPool,
+} from "./repos/proxyPoolFitnessRepo.js";
+
 // Apify keys
 export {
   getApifyKeys, getApifyKeyById, getActiveApifyKeys,
