@@ -1,415 +1,646 @@
-// Freebuff (Codebuff) custom executor.
-//
-// The upstream API at www.codebuff.com is OpenAI-compatible at
-// /api/v1/chat/completions but requires three extra layers:
-//
-// 1. Agent Run: POST /api/v1/agent-runs {action:"START", agentId} → runId.
-//    Each model maps to a "free agent" (e.g. base2-free, base2-free-mimo).
-//    The runId ties chat requests to a server-side agent session.
-//
-// 2. Free Session: POST /api/v1/freebuff/session {} → {status, instanceId, ...}.
-//    Tracks rate limiting / queueing. When status="queued", we poll until "active".
-//    When 404 → sessions disabled (free tier not required).
-//
-// 3. Metadata injection: chat body gets metadata.run_id, metadata.cost_mode="free",
-//    metadata.client_id, metadata.freebuff_instance_id injected before sending upstream.
-//
-// Error handling: session/run invalidation triggers one retry with fresh run+session.
-
+import crypto from "node:crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
+import {
+  FETCH_CONNECT_TIMEOUT_MS,
+  DEFAULT_RETRY_CONFIG,
+  resolveRetryEntry,
+} from "../config/runtimeConfig.js";
+import { markPoolUnfit, clearPoolUnfit } from "../services/proxyPoolFitness.js";
 
-const BASE_URL = "https://www.codebuff.com";
-const CHAT_PATH = "/api/v1/chat/completions";
-const AGENT_RUNS_PATH = "/api/v1/agent-runs";
+/**
+ * Freebuff Executor — OpenAI-compatible chat completions on
+ * https://www.codebuff.com/api/v1/chat/completions (the Codebuff/Freebuff backend).
+ *
+ * Wire shape mirrors the official CLI exactly. The CLI (Vercel AI SDK with the
+ * codebuff openai-compatible provider) builds `providerOptions.codebuff` =
+ * { codebuff_metadata, provider } and the provider spreads those entries at
+ * the TOP LEVEL of the request body — i.e. the body is:
+ *   { model, messages, codebuff_metadata: { run_id, client_id, cost_mode,
+ *     freebuff_instance_id? }, provider: { allow_fallbacks } }
+ * NOT nested under a `codebuff` object (the backend rejects the nested shape
+ * with 400 "No runId found in request body").
+ *
+ * The run_id is not a free-form uuid: the backend resolves it against its
+ * agent-run store and rejects unknown ids with 400 "runId Not Found". So every
+ * chat request first registers a run via POST /api/v1/agent-runs
+ * ({ action:"START", agentId, ancestorRunIds:[] }) → { runId }, and that id is
+ * what goes in codebuff_metadata.run_id. The free tier additionally gates on a
+ * session: POST /api/v1/freebuff/session with an `x-freebuff-model` header
+ * claims a row (bound to one model, ~1h); its instance id must ride along as
+ * codebuff_metadata.freebuff_instance_id.
+ */
 const SESSION_PATH = "/api/v1/freebuff/session";
+const RUN_PATH = "/api/v1/agent-runs";
+const SESSION_DEFAULT_TTL_MS = 60 * 60 * 1000; // active sessions live ~1h
 
-// Map upstream model → Codebuff free agent ID
-const MODEL_AGENT_MAP = {
-  "minimax/minimax-m2.7": "base2-free",
-  "minimax/minimax-m3": "base2-free-minimax-m3",
+// Chat statuses that mean our claimed session is stale and must be re-claimed
+// before retrying (mirrors the CLI's FreebuffGateErrorKind statuses).
+const SESSION_STALE_CODES = new Set([428, 409, 410]);
+
+// The free tier rejects requests whose first system message doesn't open with
+// the canonical Freebuff CLI root prompt (server gate
+// requestHasFreebuffSystemMarker → 403 free_mode_cli_required). The check is a
+// byte-exact prefix test on position 0, so we prepend the canonical opening.
+// Same anti-abuse pattern as mimo-free's MIMO_SYSTEM_MARKER injection.
+const FREEBUFF_SYSTEM_MARKER = "You are Buffy, the strategic coding assistant.";
+
+// Canonical openings accepted by the server gate (mirrors the CLI's
+// FREEBUFF_ROOT_SYSTEM_PROMPT_OPENINGS). The check is a byte-exact prefix on
+// the first message, so our injected marker must be one of these verbatim.
+const FREEBUFF_ROOT_SYSTEM_OPENINGS = [
+  "You are Buffy, the strategic coding assistant.",
+  "You are Buffy, the Freebuff Cloud project planner.",
+  "You are Buffy, a strategic assistant that orchestrates complex coding tasks through specialized sub-agents.",
+];
+
+// Ensure messages[0] opens with a canonical Freebuff root prompt (idempotent).
+function injectFreebuffMarker(body) {
+  const messages = body?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return body;
+  const first = messages[0];
+  if (first?.role === "system" && typeof first.content === "string") {
+    const trimmed = first.content.trimStart();
+    if (FREEBUFF_ROOT_SYSTEM_OPENINGS.some((opening) => trimmed.startsWith(opening))) return body; // already marked
+    // Prepend the canonical opening to the existing system prompt so it stays
+    // the first thing the model reads (keep the rest of the messages intact).
+    return {
+      ...body,
+      messages: [{ ...first, content: `${FREEBUFF_SYSTEM_MARKER}\n\n${first.content}` }, ...messages.slice(1)],
+    };
+  }
+  // No leading system message — insert one with the canonical opening.
+  return { ...body, messages: [{ role: "system", content: FREEBUFF_SYSTEM_MARKER }, ...messages] };
+}
+
+// Freebuff root agent id per model (mirrors the CLI's FREEBUFF_ROOT_AGENT_ID_BY_MODEL).
+const FREE_ROOT_AGENT_BY_MODEL = {
   "deepseek/deepseek-v4-flash": "base2-free-deepseek-flash",
-  "mimo/mimo-v2.5": "base2-free-mimo",
   "deepseek/deepseek-v4-pro": "base2-free-deepseek",
-  "mimo/mimo-v2.5-pro": "base2-free-mimo-pro",
-  "moonshotai/kimi-k2.6": "base2-free-kimi",
+  "mimo/mimo-v2.5": "base2-free-mimo",
+  "minimax/minimax-m3": "base2-free-minimax-m3",
+  "openai/gpt-5.6-luna": "base2-free-luna",
 };
 
-const DEFAULT_AGENT_ID = "base2-free";
+// Per-token+model session cache (in-memory; keyed so multi-account setups
+// don't share one session row). Re-claims are driven by the cache expiring or
+// by a 428 from chat — no early re-claim, so we never POST /session while our
+// own row is still active (which could come back as a spurious model_locked).
+// All state lives on globalThis so Next dev (Turbopack) bundles share ONE copy.
+const FB_STATE_KEY = "__9routerFreebuffState__";
+const fbState = (globalThis[FB_STATE_KEY] ??= {
+  sessionCache: new Map(),      // `${token}::${model}` -> { instanceId, expiresAt }
+  inflight: new Map(),          // dedupe concurrent claims for the same key
+  modelLockCooldowns: new Map(), // `${token}::${model}` -> expiresAt (ms)
+  poolLimitCooldowns: new Map(), // `${proxyKey}::${model}` -> expiresAt (ms)
+});
+const sessionCache = fbState.sessionCache;
+const inflight = fbState.inflight;
+const modelLockCooldowns = fbState.modelLockCooldowns;
+const poolLimitCooldowns = fbState.poolLimitCooldowns;
 
-// Session poll interval (clamped between 1s and 5s)
-const SESSION_POLL_MIN_MS = 1000;
-const SESSION_POLL_MAX_MS = 5000;
-const SESSION_QUEUE_TIMEOUT_MS = 120_000; // give up after 2 min in queue
+const MODEL_LOCK_COOLDOWN_MS = 10 * 60 * 1000; // session bound to another model (~1h) — re-check every 10 min
+const POOL_LIMITED_COOLDOWN_MS = 5 * 60 * 1000; // IP tier refuses this model — try a different pool/relay
 
-// Per-token in-memory state: { runs: Map<agentId, {runId, startedAt}>, session: {...}, clientId }
-const tokenState = new Map();
-
-function getState(token) {
-  if (!tokenState.has(token)) {
-    tokenState.set(token, {
-      runs: new Map(),
-      session: null,
-      clientId: generateClientId(),
-    });
+// Cooldown maps need pruning: expired entries are cleared on write (sweep) and
+// on read, so long-running servers don't accumulate one entry per (account,model)
+// / (proxy,model) forever.
+function setCooldown(map, key, until) {
+  const now = Date.now();
+  for (const [k, v] of map) {
+    if (v <= now) map.delete(k);
   }
-  return tokenState.get(token);
+  map.set(key, until);
 }
 
-function invalidateSession(token) {
-  const st = getState(token);
-  st.session = null;
-}
-
-function invalidateRun(token, agentId) {
-  const st = getState(token);
-  st.runs.delete(agentId);
-}
-
-function generateClientId() {
-  return "cl_" + Math.random().toString(36).slice(2, 14) + Date.now().toString(36);
-}
-
-function getAgentId(model) {
-  return MODEL_AGENT_MAP[model] || DEFAULT_AGENT_ID;
-}
-
-// ── Agent Run management ─────────────────────────────────────────────────
-
-async function ensureRun(token, agentId, proxyOptions) {
-  const st = getState(token);
-  const existing = st.runs.get(agentId);
-  if (existing && Date.now() - existing.startedAt < 30 * 60 * 1000) {
-    return existing.runId; // reuse for up to 30 min
+function getCooldown(map, key) {
+  const until = map.get(key);
+  if (until == null) return null;
+  if (until <= Date.now()) {
+    map.delete(key);
+    return null;
   }
+  return until;
+}
 
-  dbg("FREEBUFF", `Starting agent run: ${agentId}`);
-  const resp = await proxyAwareFetch(
-    `${BASE_URL}${AGENT_RUNS_PATH}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Authorization": `Bearer ${token}`,
-        "User-Agent": "Freebuff-CLI/0.0.96",
-      },
-      body: JSON.stringify({ action: "START", agentId }),
+function proxyKeyOf(proxyOptions) {
+  return proxyOptions?.vercelRelayUrl || proxyOptions?.connectionProxyUrl || "direct";
+}
+
+function sessionGateFromText(text) {
+  let parsed = {};
+  try { parsed = JSON.parse(String(text || "")); } catch { parsed = {}; }
+  return classifySessionGate(parsed.error || parsed.error_type || "", parsed.message || "", parsed.currentModel || null);
+}
+
+// Parse a 409/428/410 body into { kind, currentModel }. `msg` may be a whole
+// error string containing a JSON tail (requestSession errors embed the body).
+function sessionGateFromError(error) {
+  const msg = String(error?.message || "");
+  const start = msg.indexOf("{");
+  if (start < 0) return null;
+  try {
+    const parsed = JSON.parse(msg.slice(start));
+    return classifySessionGate(parsed.error || "", parsed.message || "", parsed.currentModel || null);
+  } catch {
+    return null;
+  }
+}
+
+function classifySessionGate(code, message, currentModel) {
+  if (code === "session_superseded") return { kind: "superseded" };
+  if (code === "model_locked") return { kind: "model_locked", currentModel };
+  // session_model_mismatch with the limited-tier message is an IP-tier refusal;
+  // without it (or unknown) treat it as a model lock so we don't reclaim in a loop.
+  if (code === "session_model_mismatch") {
+    return /limited/i.test(String(message || ""))
+      ? { kind: "limited_ip" }
+      : { kind: "model_locked", currentModel };
+  }
+  return { kind: "stale" }; // 428/410/unknown → reclaim
+}
+
+// Applies cooldowns and throws for non-reclaimable gates. Never returns for them.
+async function throwSessionGateError(gate, { token, model, proxyKey, poolId, log }) {
+  if (gate.kind === "model_locked") {
+    const until = Date.now() + MODEL_LOCK_COOLDOWN_MS;
+    setCooldown(modelLockCooldowns, `${token}::${model}`, until);
+    const label = gate.currentModel ? `"${gate.currentModel}"` : "another model";
+    const err = new Error(
+      `Freebuff session is locked to ${label} — it cannot serve ${model}. End the session on freebuff.com or wait for it to expire (~1h).`,
+    );
+    err.status = 409;
+    err.resetsAtMs = until;
+    log?.warn?.("AUTH", `Freebuff model_locked (session=${label}, requested=${model}) — model cooldown ${MODEL_LOCK_COOLDOWN_MS / 60000}min`);
+    throw err;
+  }
+  if (gate.kind === "limited_ip") {
+    const until = Date.now() + POOL_LIMITED_COOLDOWN_MS;
+    setCooldown(poolLimitCooldowns, `${proxyKey}::${model}`, until);
+    const scope = `freebuff::${model}`;
+    if (poolId) await markPoolUnfit(poolId, scope, until, "limited_ip");
+    // Pool-scoped, not account-scoped: the caller retries via another pool
+    // instead of locking the account (resetsAtMs intentionally absent).
+    const err = new Error(
+      `Freebuff limited-mode IP rejected ${model} — this IP only allows DeepSeek V4 Flash / MiMo 2.5. Use a full-access proxy or a different model.`,
+    );
+    err.status = 409;
+    err.poolScoped = { poolId, scope, reason: "limited_ip" };
+    log?.warn?.("AUTH", `Freebuff limited-IP refused ${model} (proxy=${proxyKey.slice(0, 40)}…) — cooldown ${POOL_LIMITED_COOLDOWN_MS / 60000}min`);
+    throw err;
+  }
+}
+
+function sessionOrigin() {
+  return new URL(PROVIDERS.freebuff.baseUrl).origin; // https://www.codebuff.com
+}
+
+function sessionCacheKey(token, model) {
+  return `${token}::${model}`;
+}
+
+function rootAgentIdForModel(model) {
+  return FREE_ROOT_AGENT_BY_MODEL[model] || "base2-free";
+}
+
+// Retry transient network errors (ECONNRESET, TLS reset, …) on the session/
+// run API calls — mirrors the CLI's fetchWithRetry. Only fetch-level throws
+// are retried; HTTP error responses are returned as-is.
+//
+// The timeout signal is built per attempt: a single shared
+// AbortSignal.timeout() would stay aborted forever after it fires, silently
+// turning attempts 2..n into instant no-op rejections.
+async function fetchWithNetworkRetry(url, options, proxyOptions, attempts = 3, timeoutMs = FETCH_CONNECT_TIMEOUT_MS) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const opts = { ...options, signal: AbortSignal.timeout(timeoutMs) };
+      return await proxyAwareFetch(url, opts, proxyOptions);
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function requestSession(token, model, proxyOptions) {
+  const response = await fetchWithNetworkRetry(`${sessionOrigin()}${SESSION_PATH}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "codebuff-cli/0.0.138",
+      "x-freebuff-model": model,
     },
-    proxyOptions
-  );
+  }, proxyOptions);
 
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw Object.assign(new Error(`Freebuff start-run failed: ${resp.status} ${text}`), {
-      status: resp.status,
-    });
+  let data = {};
+  try { data = await response.json(); } catch { data = {}; }
+
+  if (response.status === 401) {
+    const err = new Error("Freebuff session auth failed (401) — re-login in the dashboard");
+    err.status = 401;
+    throw err;
+  }
+  if (!response.ok) {
+    const err = new Error(`Freebuff session request failed: ${response.status} ${JSON.stringify(data).slice(0, 200)}`);
+    err.status = response.status;
+    throw err;
   }
 
-  const data = await resp.json();
-  if (!data.runId) {
-    throw new Error(`Freebuff start-run missing runId: ${JSON.stringify(data)}`);
+  const status = data?.status;
+  if (status === "active") {
+    const parsedExp = Date.parse(data.expiresAt || "");
+    const entry = {
+      instanceId: data.instanceId,
+      expiresAt: Number.isFinite(parsedExp) ? parsedExp : Date.now() + SESSION_DEFAULT_TTL_MS,
+    };
+    sessionCache.set(sessionCacheKey(token, model), entry);
+    return { instanceId: data.instanceId, status: "active" };
+  }
+  if (status === "none") {
+    // Not session-gated right now — proceed without an instance id; a 428 on
+    // chat tells us the admission gate actually requires a session.
+    return { instanceId: null, status: "none" };
   }
 
-  st.runs.set(agentId, { runId: data.runId, startedAt: Date.now() });
-  dbg("FREEBUFF", `Agent run started: ${agentId} → ${data.runId}`);
+  const GATE_MESSAGES = {
+    country_blocked: "Freebuff is not available in your region (country blocked).",
+    banned: "Your Freebuff account has been banned.",
+    ip_capped: "Freebuff IP cap reached — try again later.",
+    rate_limited: "Freebuff session limit reached for this model — try again later.",
+    spend_limited: "Freebuff spend limit reached — add credits or wait for the window to reset.",
+    model_locked: "Freebuff session is locked to another model — end it in the CLI or wait for it to expire.",
+    model_unavailable: "This model is not available on Freebuff right now.",
+    premium_slot_taken: "Freebuff premium slot is taken — try another model.",
+  };
+  if (GATE_MESSAGES[status]) {
+    const message = data?.message ? `${GATE_MESSAGES[status]} ${data.message}` : GATE_MESSAGES[status];
+    throw new Error(message);
+  }
+  throw new Error(`Freebuff session rejected (${status || response.status}): ${JSON.stringify(data).slice(0, 200)}`);
+}
+
+async function ensureSession(token, model, proxyOptions, force = false) {
+  const key = sessionCacheKey(token, model);
+  // Lazy prune: drop stale rows so the cache never accumulates expired entries.
+  const cached = sessionCache.get(key);
+  if (cached && cached.expiresAt <= Date.now()) {
+    sessionCache.delete(key);
+  }
+  if (!force && cached && cached.expiresAt > Date.now()) {
+    return { instanceId: cached.instanceId, status: "active" };
+  }
+  if (force) {
+    // Drop both the cached row and any in-flight claim so the fresh POST can't
+    // race a stale one back into the cache.
+    sessionCache.delete(key);
+    inflight.delete(key);
+    return requestSession(token, model, proxyOptions);
+  }
+  if (!inflight.has(key)) {
+    inflight.set(key, requestSession(token, model, proxyOptions).finally(() => inflight.delete(key)));
+  }
+  return inflight.get(key);
+}
+
+// Register an agent run so the chat backend can resolve the run_id we send.
+async function startRun(token, model, proxyOptions) {
+  const response = await fetchWithNetworkRetry(`${sessionOrigin()}${RUN_PATH}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "codebuff-cli/0.0.138",
+    },
+    body: JSON.stringify({
+      action: "START",
+      agentId: rootAgentIdForModel(model),
+      ancestorRunIds: [],
+    }),
+  }, proxyOptions);
+
+  const text = await response.text().catch(() => "");
+  let data = {};
+  try { data = JSON.parse(text); } catch { data = {}; }
+
+  if (response.status === 401) {
+    const err = new Error("Freebuff run auth failed (401) — re-login in the dashboard");
+    err.status = 401;
+    throw err;
+  }
+  if (!response.ok) {
+    const err = new Error(`Freebuff run start failed: ${response.status} ${text.slice(0, 200)}`);
+    err.status = response.status;
+    throw err;
+  }
+  if (!data?.runId) {
+    throw new Error(`Freebuff run start returned no runId: ${text.slice(0, 200)}`);
+  }
   return data.runId;
 }
 
-// ── Free Session management ──────────────────────────────────────────────
-
-async function ensureSession(token, proxyOptions) {
-  const st = getState(token);
-
-  // Cached active session
-  if (
-    st.session?.status === "active" &&
-    st.session.instanceId &&
-    Date.now() < st.session.expiresAt
-  ) {
-    return st.session.instanceId;
-  }
-
-  // Disabled sessions (404) — upstream doesn't require sessions for this token
-  if (st.session?.status === "disabled") {
-    return "";
-  }
-
-  return await refreshSession(token, proxyOptions);
-}
-
-async function refreshSession(token, proxyOptions) {
-  const st = getState(token);
-
-  const resp = await proxyAwareFetch(
-    `${BASE_URL}${SESSION_PATH}`,
-    {
+// Best-effort run completion — mirrors the CLI's finishAgentRun. Never throws.
+async function finishRun(token, runId, status, proxyOptions) {
+  if (!runId) return;
+  try {
+    await proxyAwareFetch(`${sessionOrigin()}${RUN_PATH}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Authorization": `Bearer ${token}`,
-        "User-Agent": "Freebuff-CLI/0.0.96",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "codebuff-cli/0.0.138",
       },
-      body: JSON.stringify({}),
-    },
-    proxyOptions
-  );
-
-  if (resp.status === 404) {
-    st.session = { status: "disabled", instanceId: "", expiresAt: 0 };
-    dbg("FREEBUFF", "Sessions disabled (404) — skipping session management");
-    return "";
+      body: JSON.stringify({ action: "FINISH", runId, status }),
+      signal: AbortSignal.timeout(10_000),
+    }, proxyOptions);
+  } catch {
+    // Best-effort only — the server sweeps stale runs.
   }
-
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw Object.assign(new Error(`Freebuff session create failed: ${resp.status} ${text}`), {
-      status: resp.status,
-    });
-  }
-
-  const data = await resp.json();
-  if (!data.status) {
-    throw new Error(`Freebuff session response missing status: ${JSON.stringify(data)}`);
-  }
-
-  // Handle queue
-  if (data.status === "queued") {
-    return await pollQueuedSession(token, data, proxyOptions);
-  }
-
-  if (data.status === "active") {
-    st.session = {
-      status: "active",
-      instanceId: data.instanceId || "",
-      expiresAt: data.expiresAt
-        ? new Date(data.expiresAt).getTime() - 5000 // 5s safety buffer
-        : Date.now() + 3600_000,
-    };
-    dbg("FREEBUFF", `Session active: instanceId=${data.instanceId?.slice(0, 12)}...`);
-    return st.session.instanceId;
-  }
-
-  // ended / superseded / none / disabled — retry create
-  if (["ended", "superseded", "none"].includes(data.status)) {
-    dbg("FREEBUFF", `Session status=${data.status}, retrying create...`);
-    // Just set a placeholder and return — the create above already happened
-    st.session = { status: data.status, instanceId: data.instanceId || "", expiresAt: 0 };
-    // Don't recurse — let the next request retry
-    return data.instanceId || "";
-  }
-
-  throw new Error(`Freebuff session unexpected status: ${data.status}`);
 }
 
-async function pollQueuedSession(token, initialData, proxyOptions) {
-  const st = getState(token);
-  const queueStart = Date.now();
+export function resetSessionCache() {
+  sessionCache.clear();
+  inflight.clear();
+}
 
-  let data = initialData;
-  let pollDelay = SESSION_POLL_MIN_MS;
+// Snapshot sizes of in-memory freebuff state (for the dashboard memory panel).
+export function sessionStateSize() {
+  return {
+    sessions: sessionCache.size,
+    inflight: inflight.size,
+    modelLocks: modelLockCooldowns.size,
+    poolLimits: poolLimitCooldowns.size,
+  };
+}
 
-  while (data.status === "queued") {
-    if (Date.now() - queueStart > SESSION_QUEUE_TIMEOUT_MS) {
-      throw Object.assign(
-        new Error(
-          `Freebuff session queue timeout after ${SESSION_QUEUE_TIMEOUT_MS / 1000}s (position ${data.position}/${data.queueDepth})`
-        ),
-        { status: 503 }
-      );
-    }
-
-    dbg(
-      "FREEBUFF",
-      `Session queued: position ${data.position}/${data.queueDepth}, waiting ${pollDelay}ms...`
-    );
-    await new Promise((r) => setTimeout(r, pollDelay));
-
-    // Poll with GET + instance header
-    const resp = await proxyAwareFetch(
-      `${BASE_URL}${SESSION_PATH}`,
-      {
-        method: "GET",
-        headers: {
-          "Accept": "application/json",
-          "Authorization": `Bearer ${token}`,
-          "User-Agent": "Freebuff-CLI/0.0.96",
-          "x-freebuff-instance-id": data.instanceId || "",
-        },
-      },
-      proxyOptions
-    );
-
-    if (!resp.ok) {
-      if (resp.status === 404) {
-        st.session = { status: "disabled", instanceId: "", expiresAt: 0 };
-        return "";
-      }
-      const text = await resp.text().catch(() => "");
-      throw Object.assign(
-        new Error(`Freebuff session poll failed: ${resp.status} ${text}`),
-        { status: resp.status }
-      );
-    }
-
-    data = await resp.json();
-
-    // Adaptive poll delay from estimated wait
-    if (data.estimatedWaitMs > 0) {
-      pollDelay = Math.min(
-        SESSION_POLL_MAX_MS,
-        Math.max(SESSION_POLL_MIN_MS, data.estimatedWaitMs)
-      );
+// Periodic sweeper: drop stale session rows + expired cooldowns so long-running
+// servers never accumulate state for accounts/models no longer in use.
+// Returns how many entries were removed.
+export function pruneSessionState(now = Date.now()) {
+  let removed = 0;
+  for (const [key, entry] of sessionCache) {
+    if (entry?.expiresAt && entry.expiresAt <= now) {
+      sessionCache.delete(key);
+      removed += 1;
     }
   }
-
-  if (data.status === "active") {
-    st.session = {
-      status: "active",
-      instanceId: data.instanceId || "",
-      expiresAt: data.expiresAt
-        ? new Date(data.expiresAt).getTime() - 5000
-        : Date.now() + 3600_000,
-    };
-    dbg("FREEBUFF", `Session active after queue: instanceId=${data.instanceId?.slice(0, 12)}...`);
-    return st.session.instanceId;
+  for (const [key, until] of modelLockCooldowns) {
+    if (until <= now) {
+      modelLockCooldowns.delete(key);
+      removed += 1;
+    }
   }
-
-  throw new Error(`Freebuff session unexpected status after queue: ${data.status}`);
+  for (const [key, until] of poolLimitCooldowns) {
+    if (until <= now) {
+      poolLimitCooldowns.delete(key);
+      removed += 1;
+    }
+  }
+  return removed;
 }
-
-// ── Chat completions with metadata injection ────────────────────────────
-
-function injectMetadata(body, runId, instanceId, clientId) {
-  const metadata = body.metadata || {};
-  metadata.run_id = runId;
-  metadata.cost_mode = "free";
-  metadata.client_id = clientId;
-  metadata.freebuff_instance_id = instanceId;
-  return { ...body, metadata };
-}
-
-// Error patterns that indicate session/run needs refresh (from Go proxy)
-const SESSION_INVALID_ERRORS = [
-  "freebuff_update_required",
-  "waiting_room_required",
-  "waiting_room_queued",
-  "session_superseded",
-  "session_expired",
-];
-
-const RUN_INVALID_ERRORS = ["runid not found", "runid not running"];
-
-function classifyError(status, bodyText) {
-  const lower = (bodyText || "").toLowerCase();
-  if (SESSION_INVALID_ERRORS.some((e) => lower.includes(e))) return "session";
-  if (RUN_INVALID_ERRORS.some((e) => lower.includes(e))) return "run";
-  return null;
-}
-
-// ── Executor class ───────────────────────────────────────────────────────
 
 export class FreebuffExecutor extends BaseExecutor {
   constructor() {
-    super("freebuff", PROVIDERS["freebuff"]);
+    super("freebuff", PROVIDERS.freebuff);
   }
 
   buildUrl() {
-    return `${BASE_URL}${CHAT_PATH}`;
+    return this.config.baseUrl;
   }
 
-  buildHeaders(credentials, stream = true) {
-    const token = credentials?.accessToken;
-    return {
-      "Content-Type": "application/json",
-      "Accept": stream ? "text/event-stream" : "application/json",
-      "Authorization": `Bearer ${token}`,
-      "User-Agent": "Freebuff-CLI/0.0.96",
+  transformRequest(model, body, stream, credentials) {
+    // Top-level wire shape — see header comment. `run_id` and
+    // `freebuff_instance_id` are attached by execute() (they need the async
+    // run/session registration), so this only sets the static parts.
+    body.codebuff_metadata = {
+      client_id:
+        credentials?.providerSpecificData?.fingerprintId ||
+        `9router-${crypto.randomUUID()}`,
+      cost_mode: "free",
     };
+    body.provider = { allow_fallbacks: false };
+    // Freebuff agents (base2-free-*) own reasoning: the backend applies the
+    // agent's reasoningOptions.effort server-side, so a client-sent
+    // reasoning_effort / reasoning.effort collides with that default →
+    // 400 "both provided with conflicting values". Mirror the CLI: send none.
+    delete body.reasoning_effort;
+    delete body.reasoning;
+    // Free-tier gate: first system message must open with the CLI marker.
+    return injectFreebuffMarker(body);
   }
 
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
-    const token = credentials?.apiKey || credentials?.accessToken;
+    const token = credentials?.accessToken;
     if (!token) {
-      throw Object.assign(new Error("Freebuff: missing apiKey/accessToken"), { status: 401 });
+      throw new Error("Freebuff requires a connected Freebuff login (no access token found)");
     }
 
-    const upstreamModel = body.model || model;
-    const agentId = getAgentId(upstreamModel);
-    const st = getState(token);
+    // Fail fast while a known-dead (account,model) / (proxy,model) pair is in
+    // cooldown — no session claim, no run registration, no upstream spam.
+    const proxyKey = proxyKeyOf(proxyOptions);
+    const poolId = proxyOptions?.proxyPoolId || null;
+    const scope = `freebuff::${model}`;
+    const lockUntil = getCooldown(modelLockCooldowns, `${token}::${model}`);
+    if (lockUntil) {
+      const err = new Error(`Freebuff session locked to another model — retry after ${new Date(lockUntil).toLocaleTimeString()}`);
+      err.status = 409;
+      err.resetsAtMs = lockUntil;
+      throw err;
+    }
+    const poolUntil = getCooldown(poolLimitCooldowns, `${proxyKey}::${model}`);
+    if (poolUntil) {
+      const err = new Error(`Freebuff limited-mode IP rejected ${model} — retry with a full-access proxy after ${new Date(poolUntil).toLocaleTimeString()}`);
+      err.status = 409;
+      err.poolScoped = { poolId, scope, reason: "limited_ip" };
+      throw err;
+    }
 
-    let attempt = 0;
-    const maxAttempts = 2;
+    let session;
+    try {
+      session = await ensureSession(token, model, proxyOptions);
+    } catch (error) {
+      const gate = sessionGateFromError(error);
+      if (gate) await throwSessionGateError(gate, { token, model, proxyKey, poolId, log });
+      log?.error?.("AUTH", `Freebuff session failed: ${error.message}`);
+      throw error;
+    }
 
-    while (attempt < maxAttempts) {
-      attempt++;
-      let runId, instanceId;
+    const url = this.buildUrl();
+    const headers = this.buildHeaders(credentials, stream);
+    const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
 
-      try {
-        runId = await ensureRun(token, agentId, proxyOptions);
-        instanceId = await ensureSession(token, proxyOptions);
-      } catch (err) {
-        // Session/run setup failed
-        if (err.status === 401) throw err; // bad token, don't retry
-        if (attempt < maxAttempts) {
-          dbg("FREEBUFF", `Setup failed (attempt ${attempt}): ${err.message}, retrying...`);
-          invalidateRun(token, agentId);
-          invalidateSession(token);
+    // Registered run whose id the backend resolves on chat. Per-request, like
+    // the CLI's one-run-per-prompt granularity; closure-local so concurrent
+    // requests never share a runId. trace_session_id mirrors the CLI's
+    // extraCodebuffMetadata — one per run, stable across retries.
+    let runId = null;
+    const traceSessionId = crypto.randomUUID();
+
+    const buildBody = () => {
+      const transformed = this.transformRequest(model, body, stream, credentials);
+      transformed.codebuff_metadata.run_id = runId;
+      transformed.codebuff_metadata.trace_session_id = traceSessionId;
+      if (session?.instanceId) {
+        transformed.codebuff_metadata.freebuff_instance_id = session.instanceId;
+      }
+      return transformed;
+    };
+
+    // Chat POST with connect timeout + registry 429/502/503 retry + up to 2
+    // retries on fetch-level network errors (per attempt the body is rebuilt
+    // so each retry reuses the same registered run_id).
+    const doChat = async () => {
+      let networkAttempts = 0;
+      const MAX_NETWORK_ATTEMPTS = 2;
+      for (let attempt = 0; ; attempt++) {
+        const transformedBody = buildBody();
+        const bodyStr = JSON.stringify(transformedBody);
+
+        const connectCtrl = new AbortController();
+        const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
+        const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
+        const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
+        let response;
+        try {
+          response = await proxyAwareFetch(url, { method: "POST", headers, body: bodyStr, signal: mergedSignal }, proxyOptions);
+        } catch (error) {
+          // A caller/stream abort (AbortError) is genuine — never retry it. A
+          // transient socket/TLS reset (same class as the run-registration
+          // failure in the field) gets a couple of quick retries so a network
+          // blip doesn't fail the request and lock the model for 30s.
+          const aborted = error?.name === "AbortError";
+          if (aborted || networkAttempts >= MAX_NETWORK_ATTEMPTS) throw error;
+          networkAttempts += 1;
+          log?.debug?.("RETRY", `network error on ${url} (${error.message}), retry ${networkAttempts}/${MAX_NETWORK_ATTEMPTS}`);
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          continue;
+        } finally {
+          clearTimeout(connectTimer);
+        }
+
+        const entry = resolveRetryEntry(retryConfig[response.status]);
+        if (entry && attempt < entry.attempts) {
+          log?.debug?.("RETRY", `${response.status} on ${url}, retry ${attempt + 1}/${entry.attempts} after ${entry.delayMs / 1000}s`);
+          await new Promise((resolve) => setTimeout(resolve, entry.delayMs));
           continue;
         }
+        return { response, transformedBody };
+      }
+    };
+
+    // The run currently in flight. Only this one is FINISH-able: after a stale
+    // session (428/409/410) the old run is FINISH'd "cancelled" and cleared, so
+    // a later failure can never double-FINISH it (the server rejects duplicate
+    // FINISHes for the same runId).
+    let activeRunId = null;
+    const markFinished = (status) => {
+      if (!activeRunId) return;
+      const id = activeRunId;
+      activeRunId = null;
+      finishRun(token, id, status, proxyOptions);
+    };
+
+    try {
+      try {
+        runId = await startRun(token, model, proxyOptions);
+        activeRunId = runId;
+      } catch (error) {
+        log?.error?.("AUTH", `Freebuff run start failed: ${error.message}`);
+        throw error;
+      }
+
+      let { response, transformedBody } = await doChat();
+
+      // Session gates that mean our claimed session is stale/absent:
+      //   428 waiting_room_required — no session row / instance id missing
+      //   409 session_superseded — another instance took over the session
+      //   409 session_model_mismatch — session bound to a different model
+      //   410 session_expired    — the active session's expires_at passed
+      // model_locked / limited-tier mismatches are NOT reclaimable — the server
+      // keeps refusing until the session expires or the IP tier changes, so we
+      // set a cooldown and fail fast instead of force re-claiming in a loop.
+      if (SESSION_STALE_CODES.has(response.status)) {
+        const text = await response.text().catch(() => "");
+        const gate = sessionGateFromText(text);
+        if (gate.kind === "model_locked" || gate.kind === "limited_ip") {
+          markFinished("cancelled");
+          await throwSessionGateError(gate, { token, model, proxyKey, poolId, log });
+        }
+
+        log?.debug?.("AUTH", `Freebuff ${response.status} session gate — re-claiming session`);
+        markFinished("cancelled");
+        try {
+          session = await ensureSession(token, model, proxyOptions, true);
+          runId = await startRun(token, model, proxyOptions);
+          activeRunId = runId;
+        } catch (error) {
+          const gate2 = sessionGateFromError(error);
+          if (gate2) await throwSessionGateError(gate2, { token, model, proxyKey, poolId, log });
+          log?.error?.("AUTH", `Freebuff session re-claim failed: ${error.message}`);
+          throw error;
+        }
+        ({ response, transformedBody } = await doChat());
+
+        if (SESSION_STALE_CODES.has(response.status)) {
+          const text2 = await response.text().catch(() => "");
+          const gate3 = sessionGateFromText(text2);
+          if (gate3.kind === "model_locked" || gate3.kind === "limited_ip") {
+            await throwSessionGateError(gate3, { token, model, proxyKey, poolId, log });
+          }
+          const err = new Error(
+            `Freebuff session gate refused (${response.status}) — another freebuff instance may be holding the session. ${text2.slice(0, 160)}`,
+          );
+          err.status = response.status;
+          throw err;
+        }
+      }
+
+      // A successful chat means the pair is healthy again — lift any cooldowns.
+      if (response.ok) {
+        modelLockCooldowns.delete(`${token}::${model}`);
+        poolLimitCooldowns.delete(`${proxyKey}::${model}`);
+        if (poolId) await clearPoolUnfit(poolId, scope);
+      }
+
+      // The authToken has no refresh path — when it dies, the user re-logs in.
+      // Drop the cached session for this token so a re-login starts clean.
+      if (response.status === 401) {
+        sessionCache.delete(sessionCacheKey(token, model));
+        const text = await response.text().catch(() => "");
+        const err = new Error(`Freebuff auth failed (401) — re-login in the dashboard. ${text.slice(0, 120)}`);
+        err.status = 401;
         throw err;
       }
 
-      const transformedBody = injectMetadata(body, runId, instanceId, st.clientId);
-      const url = this.buildUrl();
-      const headers = this.buildHeaders(credentials, stream);
-      const bodyStr = JSON.stringify(transformedBody);
+      // Best-effort run accounting, mirroring the CLI.
+      markFinished(response.ok ? "completed" : "failed");
 
-      dbg("FREEBUFF", `→ ${url} | model=${upstreamModel} agent=${agentId} run=${runId?.slice(0, 8)}... body=${bodyStr.length}B`);
-
-      const response = await proxyAwareFetch(
-        url,
-        {
-          method: "POST",
-          headers,
-          body: bodyStr,
-          signal,
-        },
-        proxyOptions
-      );
-
-      // Success — return to base handler for SSE/JSON processing
-      if (response.status >= 200 && response.status < 300) {
-        return { response, url, headers, transformedBody };
-      }
-
-      // 401 — token invalid
-      if (response.status === 401) {
-        const errText = await response.text().catch(() => "");
-        throw Object.assign(new Error(`Freebuff 401: ${errText}`), { status: 401 });
-      }
-
-      // Check if error is session/run related → retry with fresh state
-      if (attempt < maxAttempts) {
-        const errText = await response.text().catch(() => "");
-        const errType = classifyError(response.status, errText);
-        if (errType) {
-          dbg("FREEBUFF", `${errType} error (attempt ${attempt}): ${errText.slice(0, 200)}, retrying...`);
-          if (errType === "session") invalidateSession(token);
-          if (errType === "run") invalidateRun(token, agentId);
-          continue;
-        }
-        // Non-retryable error — return as-is for error handling
-        return { response, url, headers, transformedBody };
-      }
-
-      // Last attempt — return error response as-is
       return { response, url, headers, transformedBody };
+    } finally {
+      // Never leave the current run dangling on thrown paths (network/abort/gate).
+      if (activeRunId) {
+        finishRun(token, activeRunId, "failed", proxyOptions);
+      }
     }
-
-    throw new Error("Freebuff: max attempts exhausted");
   }
 }
+
+export const __test__ = {
+  ensureSession,
+  requestSession,
+  startRun,
+  resetSessionCache,
+  rootAgentIdForModel,
+  injectFreebuffMarker,
+  fetchWithNetworkRetry,
+  FREEBUFF_SYSTEM_MARKER,
+  SESSION_STALE_CODES,
+};
+
+export default FreebuffExecutor;
