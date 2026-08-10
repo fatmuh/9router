@@ -100,14 +100,23 @@ const FREE_ROOT_AGENT_BY_MODEL = {
 const FB_STATE_KEY = "__9routerFreebuffState__";
 const fbState = (globalThis[FB_STATE_KEY] ??= {
   sessionCache: new Map(),      // `${token}::${model}` -> { instanceId, expiresAt }
+  runCache: new Map(),          // `${token}::${model}` -> { runId, createdAt }
   inflight: new Map(),          // dedupe concurrent claims for the same key
   modelLockCooldowns: new Map(), // `${token}::${model}` -> expiresAt (ms)
   poolLimitCooldowns: new Map(), // `${proxyKey}::${model}` -> expiresAt (ms)
 });
 const sessionCache = fbState.sessionCache;
+const runCache = fbState.runCache;
 const inflight = fbState.inflight;
 const modelLockCooldowns = fbState.modelLockCooldowns;
 const poolLimitCooldowns = fbState.poolLimitCooldowns;
+
+// Run reuse: the codebuff daily limit counts AGENT RUNS, not individual chat
+// completions. The CLI creates 1 run per user prompt (which triggers many
+// internal LLM calls under the same run_id). Without reuse, 9Router would
+// burn 1 daily unit per chat request — exhausting 6/day in 6 requests.
+// We cache the run_id and reuse it across requests within the session window.
+const RUN_REUSE_TTL_MS = 55 * 60 * 1000; // 55 min (session is ~60 min)
 
 const MODEL_LOCK_COOLDOWN_MS = 10 * 60 * 1000; // session bound to another model (~1h) — re-check every 10 min
 const POOL_LIMITED_COOLDOWN_MS = 5 * 60 * 1000; // IP tier refuses this model — try a different pool/relay
@@ -323,6 +332,26 @@ async function requestSession(token, model, proxyOptions) {
   throw new Error(`Freebuff session rejected (${status || response.status}): ${JSON.stringify(data).slice(0, 200)}`);
 }
 
+// Get or create a cached agent run. The codebuff daily quota counts RUNS, so
+// reusing a run_id across multiple chat completions is critical: without it,
+// every chat request burns 1 of the 6 daily units.
+async function ensureRun(token, model, proxyOptions, force = false) {
+  const key = sessionCacheKey(token, model);
+  const cached = runCache.get(key);
+  if (!force && cached && (Date.now() - cached.createdAt) < RUN_REUSE_TTL_MS) {
+    return cached.runId;
+  }
+  // Drop stale entry and create a new one.
+  runCache.delete(key);
+  const runId = await startRun(token, model, proxyOptions);
+  runCache.set(key, { runId, createdAt: Date.now() });
+  return runId;
+}
+
+function dropRunCache(token, model) {
+  runCache.delete(sessionCacheKey(token, model));
+}
+
 // End the current freebuff session so a new one can be claimed with a different
 // model. Mirrors the CLI's DELETE /api/v1/freebuff/session call (the CLI does
 // this when a user switches models: "End your active session to switch?").
@@ -358,6 +387,7 @@ async function ensureSession(token, model, proxyOptions, force = false) {
     // so the POST doesn't collide with the old model-locked one.
     sessionCache.delete(key);
     inflight.delete(key);
+    dropRunCache(token, model);
     await deleteSession(token, proxyOptions);
     return requestSession(token, model, proxyOptions);
   }
@@ -424,6 +454,7 @@ async function finishRun(token, runId, status, proxyOptions) {
 
 export function resetSessionCache() {
   sessionCache.clear();
+  runCache.clear();
   inflight.clear();
 }
 
@@ -431,6 +462,7 @@ export function resetSessionCache() {
 export function sessionStateSize() {
   return {
     sessions: sessionCache.size,
+    runs: runCache.size,
     inflight: inflight.size,
     modelLocks: modelLockCooldowns.size,
     poolLimits: poolLimitCooldowns.size,
@@ -445,6 +477,12 @@ export function pruneSessionState(now = Date.now()) {
   for (const [key, entry] of sessionCache) {
     if (entry?.expiresAt && entry.expiresAt <= now) {
       sessionCache.delete(key);
+      removed += 1;
+    }
+  }
+  for (const [key, entry] of runCache) {
+    if (entry?.createdAt && (now - entry.createdAt) >= RUN_REUSE_TTL_MS) {
+      runCache.delete(key);
       removed += 1;
     }
   }
@@ -533,12 +571,12 @@ export class FreebuffExecutor extends BaseExecutor {
     const headers = this.buildHeaders(credentials, stream);
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
 
-    // Registered run whose id the backend resolves on chat. Per-request, like
-    // the CLI's one-run-per-prompt granularity; closure-local so concurrent
-    // requests never share a runId. trace_session_id mirrors the CLI's
-    // extraCodebuffMetadata — one per run, stable across retries.
-    let runId = null;
+    // Registered run whose id the backend resolves on chat. CACHED and reused
+    // across requests (the daily quota counts runs, not chat completions —
+    // the CLI creates 1 run per user prompt with many internal LLM calls).
+    // The run is only FINISHed when the session is reclaimed or expires.
     const traceSessionId = crypto.randomUUID();
+    let runId = null;
 
     const buildBody = () => {
       const transformed = this.transformRequest(model, body, stream, credentials);
@@ -592,10 +630,10 @@ export class FreebuffExecutor extends BaseExecutor {
       }
     };
 
-    // The run currently in flight. Only this one is FINISH-able: after a stale
-    // session (428/409/410) the old run is FINISH'd "cancelled" and cleared, so
-    // a later failure can never double-FINISH it (the server rejects duplicate
-    // FINISHes for the same runId).
+    // The run is NOT finished after each request — it's cached and reused.
+    // Only finish it on session reclaim (stale gate) or on error cleanup.
+    // markFinished is used only in the reclaim path to cancel the OLD run
+    // before creating a new one.
     let activeRunId = null;
     const markFinished = (status) => {
       if (!activeRunId) return;
@@ -606,7 +644,7 @@ export class FreebuffExecutor extends BaseExecutor {
 
     try {
       try {
-        runId = await startRun(token, model, proxyOptions);
+        runId = await ensureRun(token, model, proxyOptions);
         activeRunId = runId;
       } catch (error) {
         log?.error?.("AUTH", `Freebuff run start failed: ${error.message}`);
@@ -635,7 +673,7 @@ export class FreebuffExecutor extends BaseExecutor {
         markFinished("cancelled");
         try {
           session = await ensureSession(token, model, proxyOptions, true);
-          runId = await startRun(token, model, proxyOptions);
+          runId = await ensureRun(token, model, proxyOptions, true);
           activeRunId = runId;
         } catch (error) {
           const gate2 = sessionGateFromError(error, model);
@@ -676,14 +714,38 @@ export class FreebuffExecutor extends BaseExecutor {
         throw err;
       }
 
-      // Best-effort run accounting, mirroring the CLI.
-      markFinished(response.ok ? "completed" : "failed");
+      // Best-effort run accounting: only FINISH the run on FAILURE, not on
+      // success. On success the run stays cached for reuse — the daily quota
+      // counts runs, so finishing after each request would burn 1 unit/chat.
+      if (!response.ok) {
+        markFinished("failed");
+      }
 
       return { response, url, headers, transformedBody };
     } finally {
-      // Never leave the current run dangling on thrown paths (network/abort/gate).
+      // Do NOT finish the run on thrown paths unless it was force-reclaimed
+      // (activeRunId is set to null by markFinished). The run is cached for
+      // reuse. Only finish if this was a fresh uncached run that failed
+      // before it could be returned.
       if (activeRunId) {
-        finishRun(token, activeRunId, "failed", proxyOptions);
+        // activeRunId is still set → the run wasn't FINISHed by markFinished
+        // and wasn't cleared by the success path. This means we're on an
+        // error/abort path. Drop the cache entry so the next request gets a
+        // fresh run, but don't FINISH a cached run that other requests might
+        // still be using.
+        const cacheKey = sessionCacheKey(token, model);
+        const cached = runCache.get(cacheKey);
+        if (cached && cached.runId === activeRunId) {
+          // This was the cached run — leave it for reuse unless it's expired.
+          // Only finish if it's already past TTL.
+          if (Date.now() - cached.createdAt >= RUN_REUSE_TTL_MS) {
+            finishRun(token, activeRunId, "failed", proxyOptions);
+            runCache.delete(cacheKey);
+          }
+        } else {
+          // This was a fresh (uncached) run that failed — finish it.
+          finishRun(token, activeRunId, "failed", proxyOptions);
+        }
       }
     }
   }
