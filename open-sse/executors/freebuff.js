@@ -75,6 +75,14 @@ function injectFreebuffMarker(body) {
   return { ...body, messages: [{ role: "system", content: FREEBUFF_SYSTEM_MARKER }, ...messages] };
 }
 
+// Models allowed on limited-access (VPN/unsupported-region) IPs.
+// Source: codebuff common/src/constants/freebuff-models.ts → LIMITED_FREEBUFF_MODEL_IDS.
+// These models MUST NOT be rejected as "limited_ip" — they are explicitly allowed.
+const LIMITED_MODE_ALLOWED_MODELS = new Set([
+  "deepseek/deepseek-v4-flash",
+  "mimo/mimo-v2.5",
+]);
+
 // Freebuff root agent id per model (mirrors the CLI's FREEBUFF_ROOT_AGENT_ID_BY_MODEL).
 const FREE_ROOT_AGENT_BY_MODEL = {
   "deepseek/deepseek-v4-flash": "base2-free-deepseek-flash",
@@ -129,35 +137,53 @@ function proxyKeyOf(proxyOptions) {
   return proxyOptions?.vercelRelayUrl || proxyOptions?.connectionProxyUrl || "direct";
 }
 
-function sessionGateFromText(text) {
+function sessionGateFromText(text, requestedModel) {
   let parsed = {};
   try { parsed = JSON.parse(String(text || "")); } catch { parsed = {}; }
-  return classifySessionGate(parsed.error || parsed.error_type || "", parsed.message || "", parsed.currentModel || null);
+  return classifySessionGate(parsed.error || parsed.error_type || parsed.status || "", parsed.message || "", parsed.currentModel || null, requestedModel);
 }
 
 // Parse a 409/428/410 body into { kind, currentModel }. `msg` may be a whole
 // error string containing a JSON tail (requestSession errors embed the body).
-function sessionGateFromError(error) {
+// Also checks error.gateData for structured session API responses.
+function sessionGateFromError(error, requestedModel) {
+  // Fast path: structured gateData attached by requestSession.
+  if (error?.gateData?.status) {
+    const d = error.gateData;
+    // Map codebuff session status to the classifier's expected codes.
+    // The chat API uses `error` codes; the session API uses `status` fields.
+    const code = d.status === "model_locked" ? "model_locked" : "";
+    const message = d.accessTier === "limited" ? "limited" : "";
+    const gate = classifySessionGate(code, message, d.currentModel || null, requestedModel);
+    if (gate) return gate;
+  }
   const msg = String(error?.message || "");
   const start = msg.indexOf("{");
   if (start < 0) return null;
   try {
     const parsed = JSON.parse(msg.slice(start));
-    return classifySessionGate(parsed.error || "", parsed.message || "", parsed.currentModel || null);
+    return classifySessionGate(parsed.error || parsed.status || "", parsed.message || "", parsed.currentModel || null, requestedModel);
   } catch {
     return null;
   }
 }
 
-function classifySessionGate(code, message, currentModel) {
+function classifySessionGate(code, message, currentModel, requestedModel) {
   if (code === "session_superseded") return { kind: "superseded" };
   if (code === "model_locked") return { kind: "model_locked", currentModel };
-  // session_model_mismatch with the limited-tier message is an IP-tier refusal;
-  // without it (or unknown) treat it as a model lock so we don't reclaim in a loop.
+  // session_model_mismatch with the limited-tier message is an IP-tier refusal
+  // — BUT only for models that are NOT in the limited-mode allowlist.
+  // Flash and MiMo ARE allowed on limited IPs (codebuff source:
+  // LIMITED_FREEBUFF_MODEL_IDS), so a mismatch for those models is actually a
+  // stale session bound to another model → treat as stale and reclaim.
   if (code === "session_model_mismatch") {
-    return /limited/i.test(String(message || ""))
-      ? { kind: "limited_ip" }
-      : { kind: "model_locked", currentModel };
+    if (/limited/i.test(String(message || ""))) {
+      if (requestedModel && LIMITED_MODE_ALLOWED_MODELS.has(requestedModel)) {
+        return { kind: "stale" };
+      }
+      return { kind: "limited_ip" };
+    }
+    return { kind: "model_locked", currentModel };
   }
   return { kind: "stale" }; // 428/410/unknown → reclaim
 }
@@ -247,13 +273,38 @@ async function requestSession(token, model, proxyOptions) {
     err.status = 401;
     throw err;
   }
+
+  // Check gate statuses BEFORE the generic !response.ok throw — codebuff
+  // returns HTTP 409/429 with a JSON body whose `status` field carries the
+  // real gate reason (model_locked, rate_limited, etc.). Without this the
+  // raw JSON gets embedded in a generic error and the gate classifier can't
+  // read the structured fields.
+  const status = data?.status;
+  const GATE_MESSAGES = {
+    country_blocked: "Freebuff is not available in your region (country blocked).",
+    banned: "Your Freebuff account has been banned.",
+    ip_capped: "Freebuff IP cap reached — try again later.",
+    rate_limited: "Freebuff session limit reached for this model — try again later.",
+    spend_limited: "Freebuff spend limit reached — add credits or wait for the window to reset.",
+    model_locked: "Freebuff session is locked to another model — end it in the CLI or wait for it to expire.",
+    model_unavailable: "This model is not available on Freebuff right now.",
+    premium_slot_taken: "Freebuff premium slot is taken — try another model.",
+  };
+  if (GATE_MESSAGES[status]) {
+    const message = data?.message ? `${GATE_MESSAGES[status]} ${data.message}` : GATE_MESSAGES[status];
+    const err = new Error(message);
+    err.status = response.status;
+    // Embed the structured data so sessionGateFromError can classify it.
+    err.gateData = data;
+    throw err;
+  }
+
   if (!response.ok) {
     const err = new Error(`Freebuff session request failed: ${response.status} ${JSON.stringify(data).slice(0, 200)}`);
     err.status = response.status;
     throw err;
   }
 
-  const status = data?.status;
   if (status === "active") {
     const parsedExp = Date.parse(data.expiresAt || "");
     const entry = {
@@ -269,21 +320,26 @@ async function requestSession(token, model, proxyOptions) {
     return { instanceId: null, status: "none" };
   }
 
-  const GATE_MESSAGES = {
-    country_blocked: "Freebuff is not available in your region (country blocked).",
-    banned: "Your Freebuff account has been banned.",
-    ip_capped: "Freebuff IP cap reached — try again later.",
-    rate_limited: "Freebuff session limit reached for this model — try again later.",
-    spend_limited: "Freebuff spend limit reached — add credits or wait for the window to reset.",
-    model_locked: "Freebuff session is locked to another model — end it in the CLI or wait for it to expire.",
-    model_unavailable: "This model is not available on Freebuff right now.",
-    premium_slot_taken: "Freebuff premium slot is taken — try another model.",
-  };
-  if (GATE_MESSAGES[status]) {
-    const message = data?.message ? `${GATE_MESSAGES[status]} ${data.message}` : GATE_MESSAGES[status];
-    throw new Error(message);
-  }
   throw new Error(`Freebuff session rejected (${status || response.status}): ${JSON.stringify(data).slice(0, 200)}`);
+}
+
+// End the current freebuff session so a new one can be claimed with a different
+// model. Mirrors the CLI's DELETE /api/v1/freebuff/session call (the CLI does
+// this when a user switches models: "End your active session to switch?").
+// Best-effort — never throws; the POST that follows will fail if the DELETE
+// didn't clear the slot, and the fallback loop handles that.
+async function deleteSession(token, proxyOptions) {
+  try {
+    await fetchWithNetworkRetry(`${sessionOrigin()}${SESSION_PATH}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "codebuff-cli/0.0.138",
+      },
+    }, proxyOptions, 2, 10_000);
+  } catch {
+    // Best-effort only.
+  }
 }
 
 async function ensureSession(token, model, proxyOptions, force = false) {
@@ -298,9 +354,11 @@ async function ensureSession(token, model, proxyOptions, force = false) {
   }
   if (force) {
     // Drop both the cached row and any in-flight claim so the fresh POST can't
-    // race a stale one back into the cache.
+    // race a stale one back into the cache. Also DELETE the server-side session
+    // so the POST doesn't collide with the old model-locked one.
     sessionCache.delete(key);
     inflight.delete(key);
+    await deleteSession(token, proxyOptions);
     return requestSession(token, model, proxyOptions);
   }
   if (!inflight.has(key)) {
@@ -465,7 +523,7 @@ export class FreebuffExecutor extends BaseExecutor {
     try {
       session = await ensureSession(token, model, proxyOptions);
     } catch (error) {
-      const gate = sessionGateFromError(error);
+      const gate = sessionGateFromError(error, model);
       if (gate) await throwSessionGateError(gate, { token, model, proxyKey, poolId, log });
       log?.error?.("AUTH", `Freebuff session failed: ${error.message}`);
       throw error;
@@ -567,7 +625,7 @@ export class FreebuffExecutor extends BaseExecutor {
       // set a cooldown and fail fast instead of force re-claiming in a loop.
       if (SESSION_STALE_CODES.has(response.status)) {
         const text = await response.text().catch(() => "");
-        const gate = sessionGateFromText(text);
+        const gate = sessionGateFromText(text, model);
         if (gate.kind === "model_locked" || gate.kind === "limited_ip") {
           markFinished("cancelled");
           await throwSessionGateError(gate, { token, model, proxyKey, poolId, log });
@@ -580,7 +638,7 @@ export class FreebuffExecutor extends BaseExecutor {
           runId = await startRun(token, model, proxyOptions);
           activeRunId = runId;
         } catch (error) {
-          const gate2 = sessionGateFromError(error);
+          const gate2 = sessionGateFromError(error, model);
           if (gate2) await throwSessionGateError(gate2, { token, model, proxyKey, poolId, log });
           log?.error?.("AUTH", `Freebuff session re-claim failed: ${error.message}`);
           throw error;
@@ -589,7 +647,7 @@ export class FreebuffExecutor extends BaseExecutor {
 
         if (SESSION_STALE_CODES.has(response.status)) {
           const text2 = await response.text().catch(() => "");
-          const gate3 = sessionGateFromText(text2);
+          const gate3 = sessionGateFromText(text2, model);
           if (gate3.kind === "model_locked" || gate3.kind === "limited_ip") {
             await throwSessionGateError(gate3, { token, model, proxyKey, poolId, log });
           }
