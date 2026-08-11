@@ -269,7 +269,7 @@ async function requestSession(token, model, proxyOptions) {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
-      "User-Agent": "codebuff-cli/0.0.138",
+      "User-Agent": "codebuff-cli/0.0.142",
       "x-freebuff-model": model,
     },
   }, proxyOptions);
@@ -363,7 +363,7 @@ async function deleteSession(token, proxyOptions) {
       method: "DELETE",
       headers: {
         Authorization: `Bearer ${token}`,
-        "User-Agent": "codebuff-cli/0.0.138",
+        "User-Agent": "codebuff-cli/0.0.142",
       },
     }, proxyOptions, 2, 10_000);
   } catch {
@@ -404,7 +404,7 @@ async function startRun(token, model, proxyOptions) {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
-      "User-Agent": "codebuff-cli/0.0.138",
+      "User-Agent": "codebuff-cli/0.0.142",
     },
     body: JSON.stringify({
       action: "START",
@@ -442,7 +442,7 @@ async function finishRun(token, runId, status, proxyOptions) {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
-        "User-Agent": "codebuff-cli/0.0.138",
+        "User-Agent": "codebuff-cli/0.0.142",
       },
       body: JSON.stringify({ action: "FINISH", runId, status }),
       signal: AbortSignal.timeout(10_000),
