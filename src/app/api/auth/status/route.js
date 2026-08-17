@@ -24,6 +24,7 @@ export async function GET() {
     return NextResponse.json({
       requireLogin,
       authMode,
+      ssoType,
       oidcConfigured: isOidcConfigured(settings),
       oidcLoginLabel: (settings.oidcLoginLabel || "Sign in with OIDC").trim() || "Sign in with OIDC",
       authenticated: true,
@@ -37,6 +38,7 @@ export async function GET() {
     return NextResponse.json({
       requireLogin: true,
       authMode: "password",
+      ssoType: "oidc",
       oidcConfigured: false,
       oidcLoginLabel: "Sign in with OIDC",
       authenticated: false,
