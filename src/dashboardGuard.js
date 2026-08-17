@@ -3,6 +3,7 @@ import { getSettings, validateApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
 import { getAuthContext, hasPermission } from "@/lib/auth/authContext";
+import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
