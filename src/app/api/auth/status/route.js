@@ -10,6 +10,7 @@ export async function GET() {
     const ctx = await getAuthContext();
     const requireLogin = settings.requireLogin !== false;
     const authMode = settings.authMode || "password";
+    const ssoType = settings.ssoType || "oidc";
 
     if (!ctx) {
       return NextResponse.json({
