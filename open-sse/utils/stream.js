@@ -33,70 +33,6 @@ const STREAM_MODE = {
  * @param {string} options.model - Model name
  * @param {string} options.connectionId - Connection ID for usage tracking
  * @param {object} options.body - Request body (for input token estimation)
-// Try to parse a JSON object from the START of a string, tolerating trailing
-// garbage (e.g. "{"...}"}data: [DONE]" where the worker concatenated the JSON
-// and the [DONE] sentinel on the same line with no newline). Returns the parsed
-// object or null. Uses brace matching to find the object boundary.
-function tryParseLeadingJson(str) {
-  if (!str || str.charCodeAt(0) !== 123) return null; // must start with '{'
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
-    if (inStr) {
-      if (esc) esc = false;
-      else if (code === 92) esc = true;       // backslash
-      else if (code === 34) inStr = false;     // closing "
-    } else {
-      if (code === 34) inStr = true;           // opening "
-      else if (code === 123) depth++;          // {
-      else if (code === 125) {                  // }
-        depth--;
-        if (depth === 0) {
-          try { return JSON.parse(str.slice(0, i + 1)); } catch { return null; }
-        }
-      }
-    }
-  }
-  return null; // unbalanced braces / incomplete
-}
-
-// Convert a non-streaming OpenAI chat.completion object into proper SSE
-// streaming chunks. Used when an upstream (e.g. some Cloudflare Wrangler
-// workers) ignores stream:true and returns a single full JSON object instead
-// of an SSE stream. Without this, OpenAI SDK clients throw
-// "Stream ended without finish_reason" because the raw JSON line is not valid SSE.
-function nonStreamingCompletionToChunks(obj, model) {
-  const id = obj.id || `chatcmpl-${Date.now().toString(36)}`;
-  const created = obj.created || Math.floor(Date.now() / 1000);
-  const mdl = obj.model || model || "unknown";
-  const choice = obj.choices?.[0];
-  if (!choice) return [];
-  const msg = choice.message || {};
-  const base = { id, object: "chat.completion.chunk", created, model: mdl };
-  const chunks = [
-    // role delta
-    { ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null, logprobs: null }] },
-  ];
-  if (msg.reasoning_content) {
-    chunks.push({ ...base, choices: [{ index: 0, delta: { reasoning_content: msg.reasoning_content }, finish_reason: null, logprobs: null }] });
-  }
-  if (msg.content) {
-    chunks.push({ ...base, choices: [{ index: 0, delta: { content: msg.content }, finish_reason: null, logprobs: null }] });
-  }
-  if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-    chunks.push({ ...base, choices: [{ index: 0, delta: { tool_calls: msg.tool_calls }, finish_reason: null, logprobs: null }] });
-  }
-  const finishChunk = { ...base, choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason || "stop", logprobs: null }] };
-  if (obj.usage) finishChunk.usage = obj.usage;
-  chunks.push(finishChunk);
-  return chunks;
-}
-
-/**
- * Create unified SSE transform stream
- * @param {object} options
  * @param {function} options.onStreamComplete - Callback when stream completes (content, usage)
  * @param {string} options.apiKey - API key for usage tracking
  */
@@ -139,7 +75,35 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
-  let finishReasonSent = false; // track whether an OpenAI finish_reason chunk was ever emitted
+  let finalized = false;
+
+  // Usage/logging tail, callable from transform() as well as flush(): a client that
+  // closes right after the terminal event cancels the reader, and flush() never runs.
+  const finalizeStream = () => {
+    if (finalized) return;
+    finalized = true;
+
+    const isPassthrough = mode === STREAM_MODE.PASSTHROUGH;
+    let finalUsage = isPassthrough ? usage : state?.usage;
+
+    if (!hasValidUsage(finalUsage) && totalContentLength > 0) {
+      finalUsage = estimateUsage(body, totalContentLength, isPassthrough ? FORMATS.OPENAI : sourceFormat);
+      if (isPassthrough) usage = finalUsage; else state.usage = finalUsage;
+    }
+
+    if (hasValidUsage(finalUsage)) {
+      logUsage(isPassthrough ? provider : (state?.provider || targetFormat), finalUsage, model, connectionId, apiKey);
+    } else {
+      appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
+    }
+
+    if (onStreamComplete) {
+      onStreamComplete({
+        content: accumulatedContent,
+        thinking: accumulatedThinking
+      }, finalUsage, ttftAt);
+    }
+  };
 
   return new TransformStream({
     transform(chunk, controller) {
@@ -171,33 +135,6 @@ export function createSSEStream(options = {}) {
           let output;
           let injectedUsage = false;
           let responsesTerminal = false;
-
-          // Detect upstream returning a non-streaming chat.completion JSON object
-          // even though streaming was requested (e.g. some Cloudflare Wrangler
-          // workers ignore stream:true). Convert it into proper streaming chunks
-          // so OpenAI SDK clients don't throw "Stream ended without finish_reason".
-          if (!trimmed.startsWith("data:") && trimmed.startsWith("{")) {
-            try {
-              const maybe = tryParseLeadingJson(trimmed);
-              if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
-                const chunks = nonStreamingCompletionToChunks(maybe, model);
-                for (const c of chunks) {
-                  const out = `data: ${JSON.stringify(c)}\n\n`;
-                  reqLogger?.appendConvertedChunk?.(out);
-                  controller.enqueue(sharedEncoder.encode(out));
-                  const d = c.choices[0].delta;
-                  if (d.content) { totalContentLength += d.content.length; accumulatedContent += d.content; }
-                  if (d.reasoning_content) { totalContentLength += d.reasoning_content.length; accumulatedThinking += d.reasoning_content; }
-                  if (c.choices[0].finish_reason) finishReasonSent = true;
-                }
-                if (hasValidUsage(maybe.usage)) usage = mergeUsage(usage, maybe.usage);
-                sseEmittedCount += chunks.length;
-                continue; // don't double-forward the raw JSON
-              }
-            } catch {
-              // not valid JSON or not a completion object — fall through to normal handling
-            }
-          }
 
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
@@ -264,7 +201,6 @@ export function createSSEStream(options = {}) {
               responsesTerminal = isOpenAIResponsesTerminalEvent(currentOpenAIResponsesEvent, parsed);
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
-              if (isFinishChunk) finishReasonSent = true;
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
@@ -305,45 +241,6 @@ export function createSSEStream(options = {}) {
 
         // Translate mode
         if (!trimmed) continue;
-
-        // Detect upstream returning a non-streaming chat.completion JSON object
-        // even though streaming was requested. Convert to OpenAI streaming chunks
-        // and feed them through the translator so the content reaches the client
-        // in the correct target format.
-        if (trimmed.startsWith("{")) {
-          try {
-            const maybe = tryParseLeadingJson(trimmed);
-            if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
-              const chunks = nonStreamingCompletionToChunks(maybe, model);
-              for (const c of chunks) {
-                const d = c.choices[0].delta;
-                if (d.content) { totalContentLength += d.content.length; accumulatedContent += d.content; }
-                if (d.reasoning_content) { totalContentLength += d.reasoning_content.length; accumulatedThinking += d.reasoning_content; }
-                if (c.choices[0].finish_reason) finishReasonSent = true;
-                const translated = translateResponse(targetFormat, sourceFormat, c, state);
-                if (translated?._openaiIntermediate) {
-                  for (const item of translated._openaiIntermediate) {
-                    const openaiOutput = formatSSE(item, FORMATS.OPENAI);
-                    reqLogger?.appendOpenAIChunk?.(openaiOutput);
-                  }
-                }
-                if (translated?.length > 0) {
-                  for (const item of translated) {
-                    if (item === null || item === undefined) continue;
-                    const output = formatSSE(item, sourceFormat);
-                    reqLogger?.appendConvertedChunk?.(output);
-                    controller.enqueue(sharedEncoder.encode(output));
-                    sseEmittedCount++;
-                  }
-                }
-              }
-              if (hasValidUsage(maybe.usage)) state.usage = mergeUsage(state.usage || {}, maybe.usage);
-              continue;
-            }
-          } catch {
-            // not valid JSON or not a completion object — fall through
-          }
-        }
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
@@ -457,7 +354,6 @@ export function createSSEStream(options = {}) {
 
             // Inject estimated usage if finish chunk has no valid usage
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
-            if (isFinishChunk && item.choices?.[0]?.finish_reason) finishReasonSent = true;
             if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
               const estimated = estimateUsage(body, totalContentLength, sourceFormat);
               item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
@@ -486,53 +382,6 @@ export function createSSEStream(options = {}) {
         if (remaining) buffer += remaining;
 
         if (mode === STREAM_MODE.PASSTHROUGH) {
-          // Non-streaming JSON in the flush buffer: some Cloudflare Wrangler workers
-          // return a single chat.completion JSON object (no trailing newline, no SSE
-          // framing) even when stream:true was requested. Such JSON never enters the
-          // transform loop (it stays buffered until flush), so convert it to proper
-          // streaming chunks here before emitting [DONE].
-          if (buffer && buffer.trim().startsWith("{")) {
-            let maybe = null;
-            try { maybe = JSON.parse(buffer.trim()); } catch { maybe = null; }
-            if (maybe && maybe.object === "chat.completion" && Array.isArray(maybe.choices) && maybe.choices[0]?.message) {
-              // Inline nonStreamingCompletionToChunks to avoid bundler scope issues
-              const obj = maybe;
-              const cid = obj.id || `chatcmpl-${Date.now().toString(36)}`;
-              const ccreated = obj.created || Math.floor(Date.now() / 1000);
-              const cmdl = obj.model || model || "unknown";
-              const cchoice = obj.choices?.[0] || {};
-              const cmsg = cchoice.message || {};
-              const cbase = { id: cid, object: "chat.completion.chunk", created: ccreated, model: cmdl };
-              const chunks = [
-                { ...cbase, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null, logprobs: null }] },
-              ];
-              if (cmsg.reasoning_content) {
-                chunks.push({ ...cbase, choices: [{ index: 0, delta: { reasoning_content: cmsg.reasoning_content }, finish_reason: null, logprobs: null }] });
-              }
-              if (cmsg.content) {
-                chunks.push({ ...cbase, choices: [{ index: 0, delta: { content: cmsg.content }, finish_reason: null, logprobs: null }] });
-              }
-              if (Array.isArray(cmsg.tool_calls) && cmsg.tool_calls.length > 0) {
-                chunks.push({ ...cbase, choices: [{ index: 0, delta: { tool_calls: cmsg.tool_calls }, finish_reason: null, logprobs: null }] });
-              }
-              const finishChunk = { ...cbase, choices: [{ index: 0, delta: {}, finish_reason: cchoice.finish_reason || "stop", logprobs: null }] };
-              if (obj.usage) finishChunk.usage = obj.usage;
-              chunks.push(finishChunk);
-              for (const c of chunks) {
-                const out = `data: ${JSON.stringify(c)}\n\n`;
-                reqLogger?.appendConvertedChunk?.(out);
-                controller.enqueue(sharedEncoder.encode(out));
-                const d = c.choices[0].delta;
-                if (d?.content) { totalContentLength += d.content.length; accumulatedContent += d.content; }
-                if (d?.reasoning_content) { totalContentLength += d.reasoning_content.length; accumulatedThinking += d.reasoning_content; }
-                if (c.choices[0].finish_reason) finishReasonSent = true;
-                sseEmittedCount++;
-              }
-              if (hasValidUsage(maybe.usage)) usage = mergeUsage(usage, maybe.usage);
-              buffer = ""; // consumed
-            }
-          }
-
           if (buffer) {
             let output = buffer;
             if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
@@ -548,28 +397,6 @@ export function createSSEStream(options = {}) {
           // Without it they can hang until timeout and trigger failover.
           // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
-
-          // Synthesize a finish chunk if the upstream (e.g. Cloudflare Wrangler workers)
-          // closed the stream without ever emitting a chunk with finish_reason set.
-          // Without it, OpenAI-compatible clients throw "Stream ended without finish_reason".
-          // Note: no totalContentLength guard — some workers open the stream then close
-          // immediately with zero content (model error), still needing a finish chunk.
-          if (!finishReasonSent &&
-              (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.OPENAI_RESPONSES) &&
-              !streamDoneSent && !isGeminiFamily) {
-            const synthFinish = {
-              id: `chatcmpl-${Date.now().toString(36)}`,
-              object: "chat.completion.chunk",
-              created: Math.floor(Date.now() / 1000),
-              model: model || "unknown",
-              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-            };
-            const synthOutput = `data: ${JSON.stringify(synthFinish)}\n\n`;
-            reqLogger?.appendConvertedChunk?.(synthOutput);
-            controller.enqueue(sharedEncoder.encode(synthOutput));
-            finishReasonSent = true;
-          }
-
           if (!streamDoneSent && !isGeminiFamily) {
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
@@ -636,24 +463,6 @@ export function createSSEStream(options = {}) {
 
         // Synthesize response.failed if a Responses passthrough stream never reached a terminal event
         const keepsOpenAIResponsesFormat = targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES;
-
-        // Synthesize a finish chunk if the upstream (e.g. Cloudflare Wrangler workers)
-        // closed the stream without ever emitting a chunk with finish_reason set.
-        // Without it, OpenAI-compatible clients throw "Stream ended without finish_reason".
-        if (!finishReasonSent &&
-            (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.OPENAI_RESPONSES)) {
-          const synthFinish = {
-            id: `chatcmpl-${Date.now().toString(36)}`,
-            object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
-            model: model || "unknown",
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          };
-          const synthOutput = formatSSE(synthFinish, sourceFormat);
-          reqLogger?.appendConvertedChunk?.(synthOutput);
-          controller.enqueue(sharedEncoder.encode(synthOutput));
-          finishReasonSent = true;
-        }
         if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
           const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
           reqLogger?.appendConvertedChunk?.(failedOutput);
