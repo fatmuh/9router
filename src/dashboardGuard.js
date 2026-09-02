@@ -36,7 +36,7 @@ const PUBLIC_API_PATHS = [
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
-const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/apify"];
+const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex"];
 
 // Always require JWT session (sensitive operations)
 const ALWAYS_PROTECTED = [
@@ -67,7 +67,6 @@ const PROTECTED_API_PATHS = [
   "/api/mcp",
   "/api/translator",
   "/api/tunnel",
-  "/api/apify",
 ];
 
 // Routes that spawn child processes or read host secrets — restrict to localhost.
@@ -228,7 +227,6 @@ function requiredPermission(pathname, method) {
   if (pathname.startsWith("/api/tags")) return null; // lightweight, allow authenticated
   if (pathname.startsWith("/api/audit-log")) return "users.manage";
   if (pathname.startsWith("/api/oauth")) return write ? "providers.manage" : null;
-  if (pathname.startsWith("/api/apify")) return write ? "apify.manage" : "apify.view";
   return null; // unknown /api/* → just needs auth
 }
 
@@ -240,14 +238,12 @@ const DASHBOARD_PAGE_PERMS = {
   "/dashboard/combos": "combos.manage",
   "/dashboard/usage": "usage.view",
   "/dashboard/token-quota": "quota.view.own",
-  "/dashboard/freebuff": "freebuff.view",
   "/dashboard/quota": "quota.tracker",
   "/dashboard/token-saver": "settings.manage",
   "/dashboard/cli-tools": "cli.tools",
   "/dashboard/users": "users.manage",
   "/dashboard/roles": "roles.manage",
   "/dashboard/proxy-pools": "providers.manage",
-  "/dashboard/apify": "apify.view",
   "/dashboard/skills": "mcp.manage",
   "/dashboard/media-providers": "media.view",
   "/dashboard/console-log": "logs.view",

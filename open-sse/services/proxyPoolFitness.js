@@ -1,5 +1,5 @@
 // Durable proxy-pool fitness registry.
-// Scope format: `provider::model` (for example `freebuff::openai/gpt-5`).
+// Scope format: `provider::model` (for example `example-provider::openai/gpt-5`).
 // The map is a read-through cache; SQLite is the source of truth.
 
 import {

@@ -25,7 +25,6 @@ const navItems = [
   { href: "/dashboard/combos", label: "Combos", icon: "layers", perm: "combos.manage" },
   { href: "/dashboard/usage", label: "Usage", icon: "bar_chart", perm: "usage.view" },
   { href: "/dashboard/token-quota", label: "Token Quota", icon: "speed", perm: "quota.view.own" },
-  { href: "/dashboard/freebuff", label: "Freebuff", icon: "bolt", perm: "freebuff.view" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage", perm: "quota.tracker" },
   { href: "/dashboard/token-saver", label: "Token Saver", icon: "savings", perm: "settings.manage" },
   // { href: "/dashboard/pxpipe", label: "PXPIPE", icon: "image" },
@@ -42,7 +41,6 @@ const systemItems = [
   { href: "/dashboard/roles", label: "Roles", icon: "shield", perm: "roles.manage" },
   { href: "/dashboard/audit-log", label: "Audit Log", icon: "history_edu", perm: "users.manage" },
   { href: "/dashboard/proxy-pools", label: "Proxy Pools", icon: "lan", perm: "providers.manage" },
-  { href: "/dashboard/apify", label: "Apify Gateway", icon: "cloud", perm: "providers.manage" },
   { href: "/dashboard/skills", label: "Skills", icon: "extension", perm: "mcp.manage" },
 ];
 
