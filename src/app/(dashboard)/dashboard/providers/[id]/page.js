@@ -22,6 +22,7 @@ import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
+import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
 import ProviderBulkModal from "./ProviderBulkModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
@@ -49,6 +50,7 @@ export default function ProviderDetailPage() {
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [addConnectionError, setAddConnectionError] = useState("");
   const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
+  const [showBulkImportGrokCli, setShowBulkImportGrokCli] = useState(false);
   const [showProviderBulk, setShowProviderBulk] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
@@ -1843,6 +1845,14 @@ export default function ProviderDetailPage() {
         <BulkImportCodexModal
           isOpen={showBulkImportCodex}
           onClose={() => setShowBulkImportCodex(false)}
+          onSuccess={fetchConnections}
+        />
+      )}
+
+      {providerId === "grok-cli" && (
+        <BulkImportGrokCliModal
+          isOpen={showBulkImportGrokCli}
+          onClose={() => setShowBulkImportGrokCli(false)}
           onSuccess={fetchConnections}
         />
       )}
