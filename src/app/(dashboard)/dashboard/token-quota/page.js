@@ -38,15 +38,25 @@ export default function TokenQuotaPage() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [tab, setTab] = useState("accounts");
   const [period, setPeriod] = useState("24h");
+  const [permissions, setPermissions] = useState(null);
+
+  // RBAC: global stats/tables need usage.view; users without it get personal quota only.
+  useEffect(() => {
+    fetch("/api/auth/status")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((d) => setPermissions(new Set(d.permissions || [])))
+      .catch(() => setPermissions(new Set()));
+  }, []);
+  const canViewGlobal = permissions !== null && permissions.has("usage.view");
 
   const fetchData = useCallback(async () => {
     try {
       const [statsRes, quotaRes, allQuotaRes] = await Promise.all([
-        fetch(`/api/usage/stats?period=${period}`),
+        canViewGlobal ? fetch(`/api/usage/stats?period=${period}`) : null,
         fetch("/api/usage/quota"),
-        fetch("/api/usage/quota/all").catch(() => null),
+        canViewGlobal ? fetch("/api/usage/quota/all").catch(() => null) : null,
       ]);
-      if (statsRes.ok) setData(await statsRes.json());
+      if (statsRes && statsRes.ok) setData(await statsRes.json());
       if (quotaRes.ok) setQuotaData(await quotaRes.json());
       if (allQuotaRes && allQuotaRes.ok) {
         const aq = await allQuotaRes.json();
@@ -55,7 +65,7 @@ export default function TokenQuotaPage() {
     } catch {}
     setLoading(false);
     setLastUpdated(new Date());
-  }, [period]);
+  }, [period, canViewGlobal]);
 
   useEffect(() => {
     fetchData();
@@ -64,7 +74,7 @@ export default function TokenQuotaPage() {
     return () => clearInterval(id);
   }, [fetchData, autoRefresh]);
 
-  if (loading) {
+  if (loading || permissions === null) {
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
         {[0, 1, 2, 3].map((i) => (
@@ -73,9 +83,9 @@ export default function TokenQuotaPage() {
       </div>
     );
   }
-  if (!data) return <Card className="p-8 text-center text-text-muted">Failed to load.</Card>;
+  if (!data && !quotaData) return <Card className="p-8 text-center text-text-muted">Failed to load.</Card>;
 
-  const stats = data;
+  const stats = data || { byProvider: {}, totalPromptTokens: 0, totalCompletionTokens: 0, totalCost: 0 };
 
   // Overview numbers
   const overviewCards = [
@@ -113,19 +123,21 @@ export default function TokenQuotaPage() {
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
       {/* Header: tabs + period + live toggle */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <SegmentedControl
-          options={[
-            { value: "accounts", label: "By Account" },
-            { value: "providers", label: "By Provider" },
-            { value: "models", label: "By Model" },
-            { value: "userlimits", label: "User Limits" },
-          ]}
-          value={tab}
-          onChange={setTab}
-          className="w-full sm:w-auto"
-        />
+        {canViewGlobal && (
+          <SegmentedControl
+            options={[
+              { value: "accounts", label: "By Account" },
+              { value: "providers", label: "By Provider" },
+              { value: "models", label: "By Model" },
+              { value: "userlimits", label: "User Limits" },
+            ]}
+            value={tab}
+            onChange={setTab}
+            className="w-full sm:w-auto"
+          />
+        )}
         <div className="flex gap-2">
-          {tab !== "models" && (
+          {canViewGlobal && tab !== "models" && (
             <SegmentedControl
               options={PERIODS}
               value={period}
@@ -147,28 +159,30 @@ export default function TokenQuotaPage() {
         </div>
       </div>
 
-      {/* Overview cards */}
-      <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4 sm:gap-4">
-        {overviewCards.map((c) => (
-          <Card key={c.label} className="flex min-w-0 flex-col gap-1 px-4 py-3">
-            <div className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-[16px] text-text-muted">{c.icon}</span>
-              <span className="text-text-muted text-sm uppercase font-semibold">{c.label}</span>
-            </div>
-            <span className={`truncate text-2xl font-bold tabular-nums ${c.cls}`}>{c.value}</span>
-            {c.sub && <span className="text-[10px] text-text-muted">{c.sub}</span>}
-          </Card>
-        ))}
-      </div>
+      {/* Overview cards (global stats) */}
+      {canViewGlobal && (
+        <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4 sm:gap-4">
+          {overviewCards.map((c) => (
+            <Card key={c.label} className="flex min-w-0 flex-col gap-1 px-4 py-3">
+              <div className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[16px] text-text-muted">{c.icon}</span>
+                <span className="text-text-muted text-sm uppercase font-semibold">{c.label}</span>
+              </div>
+              <span className={`truncate text-2xl font-bold tabular-nums ${c.cls}`}>{c.value}</span>
+              {c.sub && <span className="text-[10px] text-text-muted">{c.sub}</span>}
+            </Card>
+          ))}
+        </div>
+      )}
 
       {/* Logged-in user's own quota — always visible */}
       {quotaData?.status && <QuotaSection u={quotaData.status} />}
 
-      {/* Tab content */}
-      {tab === "accounts" && <AccountTable stats={stats} />}
-      {tab === "providers" && <ProviderTable stats={stats} />}
-      {tab === "models" && <ModelTable stats={stats} />}
-      {tab === "userlimits" && <UserQuotaTable quotas={allQuotas} />}
+      {/* Tab content (global data) */}
+      {canViewGlobal && tab === "accounts" && <AccountTable stats={stats} />}
+      {canViewGlobal && tab === "providers" && <ProviderTable stats={stats} />}
+      {canViewGlobal && tab === "models" && <ModelTable stats={stats} />}
+      {canViewGlobal && tab === "userlimits" && <UserQuotaTable quotas={allQuotas} />}
     </div>
   );
 }
