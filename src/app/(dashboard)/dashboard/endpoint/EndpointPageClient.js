@@ -278,7 +278,7 @@ export default function APIPageClient({ machineId }) {
           const createRes = await fetch("/api/keys", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: "Default Key" }),
+            body: JSON.stringify({}), // no name → server names it after the user
           });
           if (createRes.ok) existing = await fetchKeys();
         } catch { /* fall through to empty render */ }

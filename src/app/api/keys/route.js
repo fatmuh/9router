@@ -33,7 +33,8 @@ export async function POST(request) {
       return NextResponse.json({ error: "Forbidden: missing permission keys.own" }, { status: 403 });
     }
     const body = await request.json();
-    const { name } = body;
+    // Default the key name to the owner's username (not a generic "Default Key").
+    const name = (typeof body.name === "string" && body.name.trim()) || ctx.username || "API Key";
     if (!name) return NextResponse.json({ error: "Name is required" }, { status: 400 });
 
     const machineId = await getConsistentMachineId();

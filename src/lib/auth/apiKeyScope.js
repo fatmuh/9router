@@ -33,6 +33,36 @@ export function isModelAllowed(model, allowedModels) {
 }
 
 /**
+ * Resolve the effective model allowlists for an API key: the KEY-level
+ * whitelist and the OWNER-USER whitelist (each, when set, further restricts).
+ * @param {string|null} apiKey - raw key string (null = local mode)
+ * @returns {Promise<string[][]|null>} array of pattern lists the model must
+ *   match ALL of; null when unrestricted (no key, or no list set anywhere).
+ */
+export async function resolveApiKeyModelLists(apiKey) {
+  if (!apiKey) return null;
+  const keyRecord = await getApiKeyByKey(apiKey);
+  if (!keyRecord) return null;
+  const lists = [];
+  if (Array.isArray(keyRecord.allowedModels) && keyRecord.allowedModels.length > 0) {
+    lists.push(keyRecord.allowedModels);
+  }
+  if (keyRecord.userId) {
+    const user = await getUserById(keyRecord.userId);
+    if (user && Array.isArray(user.allowedModels) && user.allowedModels.length > 0) {
+      lists.push(user.allowedModels);
+    }
+  }
+  return lists.length ? lists : null;
+}
+
+/** Does `model` pass EVERY allowlist in `lists`? (empty/missing list = allow all) */
+export function modelAllowedByLists(model, lists) {
+  if (!Array.isArray(lists) || lists.length === 0) return true;
+  return lists.every((l) => isModelAllowed(model, l));
+}
+
+/**
  * Resolve the current rolling window for a key.
  * Returns { windowStart, resetAt, isNew }.
  *  - If the key has no limit → windowStart = null (no quota tracking).
