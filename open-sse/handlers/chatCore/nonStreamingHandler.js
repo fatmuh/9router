@@ -305,6 +305,11 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     }
   }
 
+  // Unwrap before any consumer reads choices/usage so non-stream clients get a
+  // bare OpenAI body and usage tracking sees data.usage. No-op unless the
+  // provider opts in via transport.quirks.clineEnvelope.
+  responseBody = unwrapClineEnvelope(responseBody, provider);
+
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
   if (onRequestSuccess) {
     Promise.resolve()
