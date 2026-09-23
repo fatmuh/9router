@@ -21,6 +21,7 @@ import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/strea
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { needsMultiStepFix, cleanConversationHistory, injectSentinelTool, rewriteNonStreamingSentinel, rewriteStreamingSentinel } from "../utils/multiStepToolFix.js";
+import { takeRenamedToolNames } from "../utils/opencodeFingerprint.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { injectPonytail } from "../rtk/ponytail.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";

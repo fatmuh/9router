@@ -17,7 +17,7 @@ import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { capabilitiesFromServiceKind, getCapabilitiesForModel, aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
 import { extractApiKey } from "@/sse/services/auth.js";
 import { resolveApiKeyModelLists, modelAllowedByLists } from "@/lib/auth/apiKeyScope.js";
 
@@ -37,6 +37,27 @@ export async function filterModelsForRequest(request, data) {
   } catch {
     return data;
   }
+}
+
+// Qoder shares one live resolver across intl (qoder) and CN (qoder-cn); the
+// credentials carry the provider id so qoderModels picks the right region's
+// catalog endpoint.
+async function resolveQoderLiveModels(conn, provider) {
+  const result = await resolveQoderModels({
+    provider,
+    accessToken: conn.accessToken,
+    // PAT (pt-...) connections keep the token in apiKey; without it the live
+    // catalog silently fails and /v1/models falls back to the static list.
+    apiKey: conn.apiKey,
+    refreshToken: conn.refreshToken,
+    email: conn.email,
+    displayName: conn.displayName,
+    providerSpecificData: conn.providerSpecificData || {}
+  });
+  // Visible + hidden (enable:false) catalog keys — chat routes all of them.
+  const models = routableQoderModels(result);
+  if (!models.length) return null;
+  return { models: models.map((m) => ({ id: m.id, name: m.name })) };
 }
 
 // Per-provider live model resolvers. Each receives a connection record and
