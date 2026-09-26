@@ -314,6 +314,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   if (xf.length && log?.line) log.line(reqTag, "⚙", xf.join(" · "));
 
+  // Pin cache breakpoints to the final body — every saver above can reshape
+  // system/tools/messages, and a stale anchor costs a full prefix rewrite.
+  if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);
+
   // Multi-step tool fix for kimi-k2.7-code on CF.
   // The model is flaky (40-60% premature stop rate after tool results).
   // Fix: 1) clean history (strip reasoning from assistant messages with tool_calls)

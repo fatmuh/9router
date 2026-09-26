@@ -361,7 +361,17 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       }
     }
 
-    return { success: true, response: new Response(JSON.stringify(parsed), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
+    // A Responses-format client (e.g. Codex) forced this provider to stream,
+    // but wants JSON back. parseSSEToOpenAIResponse yields a Chat Completions
+    // body; convert it to the Responses `output` shape so tool_calls are not
+    // lost on the non-streaming return path. Inlined (not imported from
+    // nonStreamingHandler.js) to avoid a circular import: nonStreamingHandler
+    // already imports parseSSEToOpenAIResponse from this module.
+    const finalBody = sourceFormat === FORMATS.OPENAI_RESPONSES
+      ? chatCompletionToResponses(parsed, customToolNames)
+      : parsed;
+
+    return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalBody, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
   } catch (err) {
     console.error("[ChatCore] Chat Completions SSE→JSON failed:", err);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Failed to convert streaming response to JSON");

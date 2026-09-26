@@ -10,6 +10,7 @@ import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLin
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { createSentinelFilterStream } from "../../utils/multiStepToolFix.js";
+import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
@@ -92,15 +93,15 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     ? buildAbortedResponsesTerminalBytes
     : (message) => buildStreamErrorBytes(HTTP_STATUS.GATEWAY_TIMEOUT, message, sourceFormat);
   const stallTimeoutMs = PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
-  const pipedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs);
+  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs);
 
   // Multi-step tool fix: filter _router_finish sentinel from the SSE stream
   // so the client never sees the injected sentinel tool. The sentinel's
   // summary argument is emitted as normal content, and finish_reason is
   // rewritten from "tool_calls" → "stop".
   const finalStream = multiStepFixApplied
-    ? pipedBody.pipeThrough(createSentinelFilterStream())
-    : pipedBody;
+    ? transformedBody.pipeThrough(createSentinelFilterStream())
+    : transformedBody;
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
@@ -118,7 +119,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 
   return {
     success: true,
-    response: new Response(finalStream, { headers: SSE_HEADERS })
+    response: new Response(finalStream, { headers: { ...SSE_HEADERS, ...upstreamResponseHeaders(providerResponse.headers) } })
   };
 }
 
