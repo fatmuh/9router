@@ -133,6 +133,10 @@ import p130 from "./bai.js";
 import p131 from "./tinyfish.js";
 import p132 from "./v1m.js";
 import p133 from "./muse.js";
+import p134 from "./minimax-code.js";
+import p135 from "./minimax-code-global.js";
+import p136 from "./bedrock.js";
+import p137 from "./bedrock-xai.js";
 export default [
   p0,
   p1,

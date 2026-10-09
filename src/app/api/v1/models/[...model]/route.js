@@ -43,6 +43,7 @@ export async function GET(request, { params }) {
     const path = Array.isArray(model) ? model : [model];
     const identifier = path.filter(Boolean).join("/");
     const kindFilter = path.length === 1 ? KIND_SLUG_MAP[identifier] : null;
+    const keyAccess = await getKeyAccessContext(request);
 
     if (kindFilter) {
       const data = await filterModelsForRequest(request, await buildModelsList(kindFilter));

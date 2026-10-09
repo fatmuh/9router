@@ -209,6 +209,15 @@ export async function importDb(payload) {
       );
     }
     for (const k of payload.apiKeys || []) {
+      // Per-key access: a backup without `access` (older version) restores
+      // unrestricted, exactly as before; a malformed `access` is refused.
+      let access = KEY_ACCESS_UNRESTRICTED;
+      if (k.access !== undefined) {
+        const checked = validateKeyAccessInput(k.access);
+        if (!checked.ok) throw new Error(`apiKeys ${k.id}: ${checked.error}`);
+        access = checked.value;
+      }
+      const cols = keyAccessToColumns(access);
       db.run(
         `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt, allowedModels, expiresAt, note, lastUsedAt, userId) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), stringifyJson(k.allowedModels || []), k.expiresAt || null, k.note || null, k.lastUsedAt || null, k.userId || null]

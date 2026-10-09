@@ -86,6 +86,7 @@ export async function createApiKey(name, machineId, scope = {}) {
     machineId,
     isActive: true,
     createdAt: new Date().toISOString(),
+    access: { restricted: false, allow: [] },
   };
   const sc = sanitizeScope(scope);
   db.run(
