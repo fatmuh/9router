@@ -54,7 +54,6 @@ export default function Sidebar({ onClose }) {
   const [shutdownCountdown, setShutdownCountdown] = useState(0);
   const [enableTranslator, setEnableTranslator] = useState(false);
   const [permissions, setPermissions] = useState(new Set());
-  const [showRemoteModal, setShowRemoteModal] = useState(false);
   const { copied, copy } = useCopyToClipboard(2000);
 
   const INSTALL_CMD = UPDATER_CONFIG.installCmdLatest;
@@ -380,9 +379,6 @@ export default function Sidebar({ onClose }) {
         </nav>
 
       </aside>
-
-      {/* 9Remote Promo Modal */}
-      <NineRemotePromoModal isOpen={showRemoteModal} onClose={() => setShowRemoteModal(false)} />
 
       {/* Update Confirmation Modal */}
       <ConfirmModal

@@ -1077,6 +1077,18 @@ export default function APIPageClient({ machineId }) {
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
+                  <KeyAccessControls
+                    apiKey={key}
+                    onChange={(access) => handleUpdateKeyAccess(key.id, access)}
+                    onRequestRestrict={() => setConfirmState({
+                      title: "Restrict API Key",
+                      message: `Restrict API key "${key.name}"?\n\nIt will only be able to call the combos and models you add. Until you add one, it can call nothing.`,
+                      onConfirm: async () => {
+                        setConfirmState(null);
+                        handleUpdateKeyAccess(key.id, { restricted: true, allow: key.access?.allow || [] });
+                      }
+                    })}
+                  />
                   {(key.allowedModels?.length > 0 || key.expiresAt || key.note) && (
                     <div className="flex flex-wrap gap-1.5 mt-1.5">
                       {key.allowedModels?.length > 0 ? (

@@ -38,12 +38,19 @@ export async function PUT(request, { params }) {
     if (!(await canManageKey(ctx, existing))) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const body = await request.json();
-    const { isActive, allowedModels, expiresAt, note } = body;
+    const { isActive, allowedModels, expiresAt, note, access } = body;
     const updateData = {};
     if (isActive !== undefined) updateData.isActive = isActive;
     if (allowedModels !== undefined) updateData.allowedModels = allowedModels;
     if (expiresAt !== undefined) updateData.expiresAt = expiresAt;
     if (note !== undefined) updateData.note = note;
+    // Upstream per-key access control (combos + models allow-list)
+    if (access !== undefined) {
+      const { validateKeyAccessInput } = await import("@/shared/utils/keyAccess.js");
+      const checked = validateKeyAccessInput(access);
+      if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
+      updateData.access = checked.value;
+    }
 
     const updated = await updateApiKey(id, updateData);
     return NextResponse.json({ key: updated });

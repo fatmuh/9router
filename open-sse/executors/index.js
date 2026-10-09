@@ -68,6 +68,13 @@ const executors = {
   "minimax-code": new MinimaxCodeExecutor("minimax-code"),
   "minimax-code-global": new MinimaxCodeExecutor("minimax-code-global"),
   "devin-cli": new DevinCliExecutor(),
+  bedrock: new BedrockExecutor(),
+  br: new BedrockExecutor(), // Alias for bedrock
+  // Second Bedrock entry for xAI's Grok, which speaks OpenAI Chat Completions rather than the
+  // Anthropic Messages format. Same executor, different registry transport format — the pattern
+  // vertex / vertex-partner already uses.
+  "bedrock-xai": new BedrockExecutor("bedrock-xai"),
+  brx: new BedrockExecutor("bedrock-xai"), // Alias for bedrock-xai
   agentrouter: new AgentRouterExecutor(),
 };
 

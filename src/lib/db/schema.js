@@ -123,6 +123,9 @@ export const TABLES = {
       lastUsedAt: "TEXT",         // ISO datetime; auto-updated on each use
       // ── RBAC: which user owns this key (null = claimed by first admin on migration) ──
       userId: "TEXT",
+      // ── Upstream per-key access control (additive; existing rows read as unrestricted) ──
+      accessRestricted: "INTEGER DEFAULT 0",
+      accessAllow: "TEXT",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",

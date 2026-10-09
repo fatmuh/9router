@@ -3,6 +3,8 @@ import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 import { makeBackupDir, backupFile, pruneOldBackups } from "./backup.js";
 import { DATA_FILE } from "./paths.js";
+import { keyAccessFromColumns, keyAccessToColumns, validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
+import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
 
 // Settings
 export {
@@ -110,7 +112,7 @@ export async function exportDb() {
     proxyPools: safeAll(`SELECT * FROM proxyPools`, "proxyPools").map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     roles: safeAll(`SELECT * FROM roles`, "roles").map((r) => ({ id: r.id, name: r.name, description: r.description || null, permissions: parseJson(r.permissions, []), isSystem: r.isSystem === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     users: safeAll(`SELECT * FROM users`, "users").map((r) => safe(`user ${r.id}`, () => ({ id: r.id, username: r.username, passwordHash: r.passwordHash || null, roleId: r.roleId, isActive: r.isActive === 1, oidcSubject: r.oidcSubject || null, createdAt: r.createdAt, updatedAt: r.updatedAt, lastLoginAt: r.lastLoginAt || null, limitTokens: r.limitTokens != null ? Number(r.limitTokens) : null, limitWindowMs: r.limitWindowMs != null ? Number(r.limitWindowMs) : null, windowStartedAt: r.windowStartedAt || null, allowedModels: parseJson(r.allowedModels, null) })) || r),
-    apiKeys: safeAll(`SELECT * FROM apiKeys`, "apiKeys").map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, allowedModels: parseJson(r.allowedModels, []), expiresAt: r.expiresAt || null, note: r.note || null, lastUsedAt: r.lastUsedAt || null, userId: r.userId || null })),
+    apiKeys: safeAll(`SELECT * FROM apiKeys`, "apiKeys").map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, allowedModels: parseJson(r.allowedModels, []), expiresAt: r.expiresAt || null, note: r.note || null, lastUsedAt: r.lastUsedAt || null, userId: r.userId || null, access: keyAccessFromColumns(r.accessRestricted, r.accessAllow) })),
     combos: safeAll(`SELECT * FROM combos`, "combos").map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -219,8 +221,8 @@ export async function importDb(payload) {
       }
       const cols = keyAccessToColumns(access);
       db.run(
-        `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt, allowedModels, expiresAt, note, lastUsedAt, userId) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), stringifyJson(k.allowedModels || []), k.expiresAt || null, k.note || null, k.lastUsedAt || null, k.userId || null]
+        `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt, allowedModels, expiresAt, note, lastUsedAt, userId, accessRestricted, accessAllow) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), stringifyJson(k.allowedModels || []), k.expiresAt || null, k.note || null, k.lastUsedAt || null, k.userId || null, cols.accessRestricted, cols.accessAllow]
       );
     }
     for (const c of payload.combos || []) {

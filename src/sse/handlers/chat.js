@@ -98,6 +98,13 @@ export async function handleChat(request, clientRawRequest = null) {
     }
   }
 
+  // Per-key access control: a restricted key may call only its listed combos and
+  // models. Checked once on the requested target, before bypass, combo expansion
+  // and any credential lookup; an allowed combo grants the members it routes to.
+  const keyAccess = await getKeyAccessContext(request);
+  const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
+  if (keyAccessDenied) return keyAccessDenied;
+
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";
   const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);

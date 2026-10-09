@@ -1,6 +1,8 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { resolveWindow, formatWindowMs } from "@/lib/auth/apiKeyScope.js";
+import { keyAccessFromColumns, keyAccessToColumns } from "@/shared/utils/keyAccess.js";
+import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
 
 // Normalize a raw DB row into an API key object, parsing JSON scope fields.
 function rowToKey(row) {
@@ -23,6 +25,8 @@ function rowToKey(row) {
     note: row.note || null,
     lastUsedAt: row.lastUsedAt || null,
     userId: row.userId || null,
+    // Upstream per-key access control (combos + models allow-list)
+    access: keyAccessFromColumns(row.accessRestricted, row.accessAllow),
   };
 }
 
@@ -89,12 +93,14 @@ export async function createApiKey(name, machineId, scope = {}) {
     access: { restricted: false, allow: [] },
   };
   const sc = sanitizeScope(scope);
+  const accCols = keyAccessToColumns(scope.access ?? KEY_ACCESS_UNRESTRICTED);
   db.run(
-    `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, allowedModels, expiresAt, note, userId)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, allowedModels, expiresAt, note, userId, accessRestricted, accessAllow)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
       sc.allowedModels ?? null, sc.expiresAt ?? null, sc.note ?? null, scope.userId ?? null,
+      accCols.accessRestricted, accCols.accessAllow,
     ]
   );
   return {
@@ -118,9 +124,10 @@ export async function updateApiKey(id, data) {
     const allowedModels = sc.allowedModels ?? JSON.stringify(merged.allowedModels || []);
     const expiresAt = data.expiresAt !== undefined ? (sc.expiresAt ?? null) : (merged.expiresAt ?? null);
     const note = data.note !== undefined ? (sc.note ?? null) : (merged.note ?? null);
+    const accCols = keyAccessToColumns(merged.access ?? KEY_ACCESS_UNRESTRICTED);
     db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, allowedModels = ?, expiresAt = ?, note = ?, lastUsedAt = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, allowedModels, expiresAt, note, merged.lastUsedAt ?? null, id]
+      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, allowedModels = ?, expiresAt = ?, note = ?, lastUsedAt = ?, accessRestricted = ?, accessAllow = ? WHERE id = ?`,
+      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, allowedModels, expiresAt, note, merged.lastUsedAt ?? null, accCols.accessRestricted, accCols.accessAllow, id]
     );
     result = { ...merged, allowedModels: merged.allowedModels || [], expiresAt, note };
   });

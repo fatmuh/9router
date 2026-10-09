@@ -137,6 +137,7 @@ import p134 from "./minimax-code.js";
 import p135 from "./minimax-code-global.js";
 import p136 from "./bedrock.js";
 import p137 from "./bedrock-xai.js";
+import p138 from "./agentrouter.js";
 export default [
   p0,
   p1,
@@ -271,5 +272,8 @@ export default [
   p132,
   p133,
   p134,
+  p135,
+  p136,
+  p137,
+  p138,
 ];
-import p134 from "./agentrouter.js";
