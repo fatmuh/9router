@@ -5,6 +5,7 @@ import {
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { enforceApiKeyAccess, scopeErrorResponse } from "@/lib/auth/apiKeyScope.js";
+import { getKeyAccessContext, enforceKeyAccess } from "../services/keyAccess.js";
 import { handleTtsCore } from "open-sse/handlers/ttsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
