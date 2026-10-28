@@ -37,6 +37,12 @@ export default {
     baseUrl: "https://api.z.ai/api/anthropic/v1/messages",
     format: "claude",
     urlSuffix: "?beta=true",
+    // Z.AI coding endpoint sends response headers only when prefill finishes:
+    // cold-cache prefill measured ~28s @60K / ~68s @100K input tokens. The 10s
+    // FETCH_CONNECT_TIMEOUT_MS default aborts every large-context request (502
+    // "fetch connect timeout" + 30s circuit-breaker lock) — long zcode/Codex
+    // sessions die and require a new session. 180s covers ~128K cold prefill.
+    timeoutMs: 180000,
     headers: { ...CLAUDE_API_HEADERS },
     auth: {
       combined: true,

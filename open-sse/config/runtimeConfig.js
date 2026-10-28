@@ -60,8 +60,15 @@ export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_M
 // Env: EMPTY_PEEK_DEADLINE_MS.
 export const EMPTY_PEEK_DEADLINE_MS = envMs("EMPTY_PEEK_DEADLINE_MS", 45 * 1000);
 
-// Fetch connect timeout: abort if upstream doesn't return response headers within this duration
-export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 10 * 1000);
+// Fetch connect timeout: abort if upstream doesn't return response headers within this duration.
+// Default 60s (was 10s): many upstreams (Z.AI coding endpoint, CLI-plan providers, relay hops)
+// hold response headers until prefill completes on large contexts — measured 28s @60K /
+// 68s @100K input tokens cold-cache. The old 10s default aborted every big-context request
+// (502 "fetch connect timeout" + 30s circuit-breaker lock), permanently wedging long coding
+// sessions (zcode/Codex/Claude Code) once the harness compacted or the prompt cache went
+// cold — the session could never continue and had to be recreated. Providers needing more
+// headroom set transport.timeoutMs in their registry entry (e.g. glm: 180s).
+export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
 
 // Proxy/relay connect timeout: extra headroom when routing through relay workers (CF/Vercel/Deno).
 // The extra hop + upstream prefill needs more time before response headers arrive.

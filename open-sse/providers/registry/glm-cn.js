@@ -15,6 +15,8 @@ export default {
   category: "apikey",
   transport: {
     baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+    // Same prefill-headers behavior as api.z.ai coding endpoint — see glm.js.
+    timeoutMs: 180000,
     headers: {},
     usage: {
       url: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
