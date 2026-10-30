@@ -48,6 +48,8 @@ const ALWAYS_PROTECTED = [
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
   "/api/oauth/zed/auto-import",
+  "/api/oauth/minimax-code/lease",
+  "/api/oauth/minimax-code-global/lease",
 ];
 
 // Require auth (RBAC permission-checked per route)
