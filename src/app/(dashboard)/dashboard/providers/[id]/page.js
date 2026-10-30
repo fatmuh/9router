@@ -2032,6 +2032,17 @@ export default function ProviderDetailPage() {
         onImported={fetchConnections}
       />
 
+      {scheduleConnection && (
+        <AutoPingScheduleModal
+          isOpen={!!scheduleConnection}
+          onClose={() => setScheduleConnection(null)}
+          connection={scheduleConnection}
+          reactive={autoPing.connections[scheduleConnection.id] === true}
+          schedule={autoPing.schedules?.[scheduleConnection.id] || null}
+          onSave={(result) => handleSaveAutoPing(scheduleConnection.id, result)}
+        />
+      )}
+
       {/* AG Risk Confirmation Modal */}
       <ConfirmModal
         isOpen={showAgRiskModal}
