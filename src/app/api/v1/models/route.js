@@ -22,6 +22,7 @@ import { resolveCommandCodeModels } from "open-sse/services/commandcodeModels.js
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel, aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
+import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import { extractApiKey } from "@/sse/services/auth.js";
 import { resolveApiKeyModelLists, modelAllowedByLists } from "@/lib/auth/apiKeyScope.js";
 
